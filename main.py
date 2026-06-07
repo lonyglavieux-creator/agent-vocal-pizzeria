@@ -217,3 +217,4 @@ async def envoyer_planning_complet():
 async def reset_planning():
     commandes_du_jour.clear()
     return {"status": "planning remis a zero"}
+ande annulé
