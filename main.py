@@ -1,9 +1,3 @@
-Lohan Parguel Riere
-	
-20:42 (il y a 12 minutes)
-	
-	
-À moi
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from twilio.rest import Client as TwilioClient
