@@ -196,25 +196,3 @@ def voir_creneaux():
             "places_restantes": MAX_PIZZAS_PAR_CRENEAU - prises
         }
     return creneaux
-
-@app.get("/planning")
-def voir_planning():
-    return {
-        "date": datetime.now().strftime("%d/%m/%Y"),
-        "commandes": commandes_du_jour,
-        "planning": generer_planning()
-    }
-
-@app.post("/envoyer-planning")
-async def envoyer_planning_complet():
-    if not commandes_du_jour:
-        return {"status": "aucune commande"}
-    planning = generer_planning()
-    envoyer_whatsapp(planning)
-    return {"status": "ok", "planning": planning}
-
-@app.delete("/reset")
-async def reset_planning():
-    commandes_du_jour.clear()
-    return {"status": "planning remis a zero"}
-ande annulé
