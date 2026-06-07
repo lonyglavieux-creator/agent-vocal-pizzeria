@@ -1,10 +1,16 @@
-de fastapi import FastAPI, Demande
-de fastapi.responses import JSONResponse, Réponse
-de twilio.rest import Client en tant que TwilioClient
-Importer os
-à partir de datetime datetime d'importation
+Lohan Parguel Riere
+	
+20:42 (il y a 12 minutes)
+	
+	
+À moi
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from twilio.rest import Client as TwilioClient
+import os
+from datetime import datetime
 
-application = FastAPI()
+app = FastAPI()
 
 twilio_client = TwilioClient(
     os.environ.get("TWILIO_SID"),
@@ -13,181 +19,259 @@ twilio_client = TwilioClient(
 TWILIO_FROM = os.environ.get("TWILIO_FROM")
 PIZZAIOLO_TEL = os.environ.get("PIZZAIOLO_TEL", "+33788705435")
 
-# Planification du jour
+# Planning du jour
 commandes_du_jour = []
 
-# Capacite du quatre
+# Capacité du four
 MAX_PIZZAS_PAR_CRENEAU = 2
-DURE_CRENEAU = 15 # minutes
+DUREE_CRENEAU = 15 # minutes
 
 TEMPS_PREP = {
-    "margherita":12,"reine":13,"regina":13,4 fromage":14,
-    "napolitaine":12,,parmigiano":15,"rucola":14,"thon":14,
-    "palerme":13,,rucolini":14,corleoni":14,"végétarienne":13,
-    "flammenkush":14,"saumone":15,chevre miel":14,"savoyarde":15,
-    "carnivore":16,"roquefort":14,crémose":13,"buffalo":16,
-    "kebab":14,"biggy burger":14,calzone":18,calzone kebab":18,
-    "vittoria":15,",diavolita":16,"primavera":15,"calabrese":15,
-    "alpin":14,"marco":16,"magretto":15,"nonna":16,
-    "pollo pesto":15,,bergère":14,"par défaut":13
+    "margherita": 12, "reine": 13, "regina": 13, "4 fromage": 14,
+    "napolitaine": 12, "parmigiano": 15, "rucola": 14, "thon": 14,
+    "palerme": 13, "rucolini": 14, "corleoni": 14, "végétarienne": 13,
+    "flammenkuche": 14, "saumon": 15, "chevre miel": 14, "savoyarde": 15,
+    "carnivore": 16, "roquefort": 14, "cremosa": 13, "buffalo": 16,
+    "kebab": 14, "biggy burger": 14, "calzone": 18, "calzone kebab": 18,
+    "vittoria": 15, "diavolita": 16, "primavera": 15, "calabrese": 15,
+    "alpin": 14, "marco": 16, "magretto": 15, "nonna": 16,
+    "pollo pesto": 15, "bergère": 14, "default": 13
 }
 
-def get_temps(pizza):
+
+def get_temps(pizza: str) -> int:
     pizza = str(pizza).lower()
-    pour la clé dans TEMPS_PREP:
-        si la clé dans la pizza:
-            Retourner TEMPS_PREP[key]
-    retourner TEMPS_PREP["default"]
+    for key in TEMPS_PREP:
+        if key in pizza:
+            return TEMPS_PREP[key]
+    return TEMPS_PREP["default"]
 
-def str_to_min(h):
-    h = str(h).strip().replace("h","").replace("H",":")
-    si ":" en h:
+
+def str_to_min(h: str) -> int:
+    h = str(h).strip().replace("H", ":").replace("h", ":")
+    if ":" in h:
         p = h.split(":")
-        retour int(p[0])*60 + (int(p[1]) si len(p)>1 et p[1] sinon 0)
-    Retour int(h)*60
+        return int(p[0]) * 60 + (int(p[1]) if len(p) > 1 and p[1] else 0)
+    return int(h) * 60
 
-def min_to_str(m):
+
+def min_to_str(m: int) -> str:
     m = int(m)
-    retour f"{m//60:02d}h{m%60:02d}"
+    return f"{m // 60:02d}h{m % 60:02d}"
 
-def pizzas_dans_creneau(heure_str):
-    ""Compte le nombre de pizzas dans un nucane de 15 min"""
-    = retrait str_to_min(heure_str)
+
+def pizzas_dans_creneau(heure_str: str, exclure_id: int = None) -> int:
+    """Compte le nombre de pizzas dans un créneau de 15 min."""
+    retrait = str_to_min(heure_str)
     total = 0
-    pour cmd dans commandes_du_jour:
-        cmd_retrait = str_to_min(cmd['heure'])
-        if abs(cmd_retrait -) < DUREE_CRENEAU:
-            total += cmd.get('nb', 1)
-    retour total
+    for cmd in commandes_du_jour:
+        if exclure_id is not None and cmd.get("id") == exclure_id:
+            continue
+        if cmd.get("annulee"):
+            continue
+        cmd_retrait = str_to_min(cmd["heure"])
+        if abs(cmd_retrait - retrait) < DUREE_CRENEAU:
+            total += cmd.get("nb", 1)
+    return total
 
-def prochain_creneau_libre(heure_str, nb_pizzas):
-    ""Trouve le prochain disponible"""
-    = retrait str_to_min(heure_str)
-    # Essaie jusqu'à 2h plus tard
-    pour i en gamme(0, 120, DUREE_CRENEAU):
+
+def prochain_creneau_libre(heure_str: str, nb_pizzas: int):
+    """Trouve le prochain créneau disponible."""
+    retrait = str_to_min(heure_str)
+    for i in range(0, 120, DUREE_CRENEAU):
         heure_test = min_to_str(retrait + i)
-        si pizzas_dans_creneau(heure_test) + nb_pizzas <= MAX_PIZZAS_PAR_CRENEAU:
-            Retour heure_test, Vrai
-    Retour Aucun, Faux
+        if pizzas_dans_creneau(heure_test) + nb_pizzas <= MAX_PIZZAS_PAR_CRENEAU:
+            return heure_test, True
+    return None, False
 
-def calcul_lancement(heure_str, pizza, nb):
+
+def calcul_lancement(heure_str: str, pizza: str, nb: int) -> str:
     base = get_temps(pizza)
-    total = base + (nb-1)*5 + 3
-    = retrait str_to_min(heure_str)
-    retour min_to_str(retrait - total)
+    total = base + (nb - 1) * 5 + 3
+    retrait = str_to_min(heure_str)
+    return min_to_str(retrait - total)
 
-def generer_planning():
+
+def generer_planning() -> str:
     date = datetime.now().strftime("%d/%m/%Y")
-    lignes = f"PLANNING {date}\n"
-    lignes += f"{len(commandes_du_jour)} commande(s)\n\n"
-    pour cmd dans tried(commandes_du_jour, key=lambda x: x['lancement']):
-        extras = f" ({cmd['extras']})" si cmd.get('extras') else ""
-        lignes += f"LANCER {cmd['lancement']}\n"
+    actives = [c for c in commandes_du_jour if not c.get("annulee")]
+    lignes = f"📋 PLANNING {date}\n"
+    lignes += f"{len(actives)} commande(s) active(s)\n\n"
+    for cmd in sorted(actives, key=lambda x: x["lancement"]):
+        extras = f" ({cmd['extras']})" if cmd.get("extras") else ""
+        lignes += f"🔥 LANCER {cmd['lancement']}\n"
         lignes += f" {cmd['nb']}x {cmd['pizza']}{extras}\n"
         lignes += f" Pour : {cmd['prenom']}\n"
         lignes += f" Retrait : {cmd['heure']}\n\n"
-    lignes += "Bonne soirée !"
-    Retour de lignes
+    lignes += "Bonne soirée ! 🍕"
+    return lignes
 
-def_wheresapp(message):
-    Essayez:
+
+def send_whatsapp(message: str) -> bool:
+    try:
         twilio_client.messages.create(
-            corps = message,
+            body=message,
             from_=f"whatsapp:{TWILIO_FROM}",
             to=f"whatsapp:{PIZZAIOLO_TEL}"
         )
         print(f"WhatsApp envoyé !")
-        Retour True
-    sauf Exception comme e:
+        return True
+    except Exception as e:
         print(f"Erreur WhatsApp : {e}")
-        Retour Faux
+        return False
+
+
+# ──────────────────────────────────────────────
+# ROUTES
+# ──────────────────────────────────────────────
 
 @app.get("/")
 def home():
-    retour {
+    actives = [c for c in commandes_du_jour if not c.get("annulee")]
+    return {
         "statut": "Nova Pizzeria API",
-        "commandes": len(commandes_du_jour),
-        "capacite": f"{MAX_PIZZAS_PAR_CRENEAU} pizzas par {DURE_CRENEAU}min"
+        "commandes_actives": len(actives),
+        "capacite": f"{MAX_PIZZAS_PAR_CRENEAU} pizzas par {DUREE_CRENEAU}min"
     }
 
-@app.get("/santé")
+
+@app.get("/health")
 def health():
-    retour {"status": "ok", "agent": "Nova Pizzeria"}
+    return {"status": "ok", "agent": "Nova Pizzeria"}
+
 
 @app.post("/commande")
-async def dexe_commande(demande: Demande):
-    Essayez:
-        données = attendre request.json()
-        print(f"Commande recue : {data}")
+async def passer_commande(request: Request):
+    try:
+        data = await request.json()
+        print(f"Commande reçue : {data}")
 
         prenom = data.get("prenom", "?")
         pizzas = data.get("pizzas", "?")
         heure = data.get("heure", "19h00")
         extras = data.get("extras", "")
 
-        # Compte le nombre de pizzas
-        nb = data.get("nb", 1)
-        Essayez:
-            nb = int(nb)
-        sauf:
+        try:
+            nb = int(data.get("nb", 1))
+        except (ValueError, TypeError):
             nb = 1
 
-        # Vérifier la capacité du creneau
+        # Vérifier la capacité du créneau
         pizzas_prises = pizzas_dans_creneau(heure)
-        si pizzas_prises + nb > MAX_PIZZAS_PAR_CRENEAU:
-            # Trouve le prochain creneau libre
+        if pizzas_prises + nb > MAX_PIZZAS_PAR_CRENEAU:
             nouveau_creneau, trouve = prochain_creneau_libre(heure, nb)
-            si trouve:
-                message_erreur = f"Creneau {heure} plein ({pizzas_prises}/{MAX_PIZZAS_PAR_CRENEAU} pizzas). Dispo Prochain : {nouveau_creneau}"
-                Retour JSONResponse({
-                    "statu": "creneau_plein",
-                    "message": message_erreur,
+            if trouve:
+                return JSONResponse({
+                    "statut": "creneau_plein",
+                    "message": f"Créneau {heure} plein ({pizzas_prises}/{MAX_PIZZAS_PAR_CRENEAU} pizzas). Prochain dispo : {nouveau_creneau}",
                     "prochain_creneau": nouveau_creneau
                 })
-            autre:
-                Retour JSONResponse({
+            else:
+                return JSONResponse({
                     "statut": "erreur",
-                    "message": "Aucun creneau disponible ce soir"
+                    "message": "Aucun créneau disponible ce soir"
                 })
 
-        # Creneau OK - enregistre la commande
+        # Créneau OK — enregistrer la commande
+        commande_id = len(commandes_du_jour) + 1
         pizza_principale = pizzas.split(",")[0].strip()
         lancement = calcul_lancement(heure, pizza_principale, nb)
 
         commandes_du_jour.append({
+            "id": commande_id,
             "prenom": prenom,
             "pizza": pizzas,
             "nb": nb,
             "heure": heure,
             "lancement": lancement,
-            "extras": extras
+            "extras": extras,
+            "annulee": False,
+            "created_at": datetime.now().isoformat()
         })
 
-        # WhatsApp immediat au pizzaiolo
-        msg = f"NOUVELLE COMMANDE\n"
+        # WhatsApp immédiat au pizzaiolo
+        msg = f"🍕 NOUVELLE COMMANDE #{commande_id}\n"
         msg += f"Client : {prenom}\n"
         msg += f"Commande : {nb}x {pizzas}"
-        msg += f" ({extras})\n" si extras else "\n"
+        msg += f" ({extras})\n" if extras else "\n"
         msg += f"Retrait : {heure}\n"
-        msg += f"Lancer a : {lancement}"
-        sender_whatsapp(msg)
+        msg += f"Lancer à : {lancement}"
+        send_whatsapp(msg)
 
-        Retour JSONResponse({
+        return JSONResponse({
             "statut": "ok",
-            "message": f"Commande de {prenom}e enregistre pour {heure}",
+            "commande_id": commande_id,
+            "message": f"Commande de {prenom} enregistrée pour {heure}",
             "lancement": lancement,
             "pizzas_dans_creneau": pizzas_dans_creneau(heure)
         })
 
-    sauf Exception comme e:
+    except Exception as e:
         print(f"Erreur : {e}")
-        retour JSONResponse({"status": "erreur", "message": str(e)}, status_code=500)
+        return JSONResponse({"statut": "erreur", "message": str(e)}, status_code=500)
+
+
+@app.delete("/commande/{commande_id}")
+async def annuler_commande(commande_id: int, request: Request):
+    """Annule une commande et notifie le pizzaiolo par WhatsApp."""
+    try:
+        data = {}
+        try:
+            data = await request.json()
+        except Exception:
+            pass
+
+        raison = data.get("raison", "Non précisée")
+
+        # Chercher la commande
+        commande = next(
+            (c for c in commandes_du_jour if c["id"] == commande_id),
+            None
+        )
+
+        if not commande:
+            return JSONResponse(
+                {"statut": "erreur", "message": f"Commande #{commande_id} introuvable"},
+                status_code=404
+            )
+
+        if commande.get("annulee"):
+            return JSONResponse(
+                {"statut": "erreur", "message": f"Commande #{commande_id} déjà annulée"},
+                status_code=400
+            )
+
+        # Marquer comme annulée
+        commande["annulee"] = True
+        commande["annulee_at"] = datetime.now().isoformat()
+        commande["raison_annulation"] = raison
+
+        # WhatsApp au pizzaiolo
+        msg = f"❌ ANNULATION COMMANDE #{commande_id}\n"
+        msg += f"Client : {commande['prenom']}\n"
+        msg += f"Commande : {commande['nb']}x {commande['pizza']}"
+        msg += f" ({commande['extras']})\n" if commande.get("extras") else "\n"
+        msg += f"Retrait prévu : {commande['heure']}\n"
+        msg += f"Lancement prévu : {commande['lancement']}\n"
+        msg += f"Raison : {raison}"
+        send_whatsapp(msg)
+
+        return JSONResponse({
+            "statut": "ok",
+            "message": f"Commande #{commande_id} de {commande['prenom']} annulée",
+            "commande": commande
+        })
+
+    except Exception as e:
+        print(f"Erreur annulation : {e}")
+        return JSONResponse({"statut": "erreur", "message": str(e)}, status_code=500)
+
 
 @app.get("/creneaux")
 def voir_creneaux():
-    ""Voir les neunes disponibles"""
-    Creneaux = {}
-    pour h en rang(18*60, 22*60, DUREE_CRENEAU):
+    """Voir les créneaux disponibles."""
+    creneaux = {}
+    for h in range(18 * 60, 22 * 60, DUREE_CRENEAU):
         heure_str = min_to_str(h)
         prises = pizzas_dans_creneau(heure_str)
         creneaux[heure_str] = {
@@ -195,25 +279,32 @@ def voir_creneaux():
             "disponible": prises < MAX_PIZZAS_PAR_CRENEAU,
             "places_restantes": MAX_PIZZAS_PAR_CRENEAU - prises
         }
-    retour creneaux
+    return creneaux
 
-@app.get("/planification")
+
+@app.get("/planning")
 def voir_planning():
-    retour {
+    actives = [c for c in commandes_du_jour if not c.get("annulee")]
+    annulees = [c for c in commandes_du_jour if c.get("annulee")]
+    return {
         "date": datetime.now().strftime("%d/%m/%Y"),
-        "commandes": commandes_du_jour,
+        "commandes_actives": actives,
+        "commandes_annulees": annulees,
         "planning": generer_planning()
     }
 
-@app.post("(envoyé/planification")
+
+@app.post("/send/planning")
 async def send_planning_complet():
-    sinon commandes_du_jour:
-        retour {"status": "annexe commande"}
-    Planification = generer_planning()
-    envoyer_whatsapp(planification)
-    retour {"status": "ok", "planification": planification}
+    actives = [c for c in commandes_du_jour if not c.get("annulee")]
+    if not actives:
+        return {"statut": "aucune commande active"}
+    planning = generer_planning()
+    send_whatsapp(planning)
+    return {"statut": "ok", "planning": planning}
+
 
 @app.delete("/reset")
 async def reset_planning():
     commandes_du_jour.clear()
-    retour {"statu": "planifier la rémission a zéro"}
+    return {"statut": "planning remis à zéro"}
