@@ -302,3 +302,9 @@ async def send_planning_complet():
 async def reset_planning():
     commandes_du_jour.clear()
     return {"statut": "planning remis à zéro"}
+    
+    ANNULATION DE COMMANDE
+Client : Marco
+Pizza annulee : 1x Reine (sans champignons)
+Retrait prevu : 19h30
+Lancement annule : 19h14
