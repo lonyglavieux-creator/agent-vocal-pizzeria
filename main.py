@@ -305,6 +305,6 @@ async def reset_planning():
     
     ANNULATION DE COMMANDE
 Client : Marco
-Pizza annulee : 1x Reine (sans champignons)
+Pizza annulee : "Pizza annulée : 1x Reine (sans champignons)"
 Retrait prevu : 19h30
 Lancement annule : 19h14
