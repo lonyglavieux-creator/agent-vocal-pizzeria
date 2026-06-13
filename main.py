@@ -303,8 +303,18 @@ async def reset_planning():
     commandes_du_jour.clear()
     return {"statut": "planning remis à zéro"}
     
-    ANNULATION DE COMMANDE
-Client : Marco
-Pizza annulee : "Pizza annulée : 1x Reine (sans champignons)"
-Retrait prevu : 19h30
-Lancement annule : 19h14
+  extras_txt = ""
+if cmd_annulee.get("extras"):
+    extras_txt = " (" + cmd_annulee["extras"] + ")"
+
+nb_annule = str(cmd_annulee["nb"])
+pizza_annulee = str(cmd_annulee["pizza"])
+heure_annulee = str(cmd_annulee["heure"])
+lancement_annule = str(cmd_annulee["lancement"])
+
+msg_annul = "ANNULATION DE COMMANDE\n"
+msg_annul += "Client : " + prenom + "\n"
+msg_annul += "Pizza annulee : " + nb_annule + "x " + pizza_annulee + extras_txt + "\n"
+msg_annul += "Retrait prevu : " + heure_annulee + "\n"
+msg_annul += "Lancement annule : " + lancement_annule
+envoyer_whatsapp(msg_annul)
