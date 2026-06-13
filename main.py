@@ -301,3 +301,4 @@ async def send_planning_complet():
 async def reset_planning():
     commandes_du_jour.clear()
     return {"statut": "planning remis a zero"}
+    return {"statut": "planning remis a zero"}
