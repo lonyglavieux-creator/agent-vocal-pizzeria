@@ -19,23 +19,51 @@ PIZZAIOLO_TEL = os.environ.get("PIZZAIOLO_TEL", "+33788705435")
 
 commandes_du_jour = []
 
-# Etat du four : nombre de fours actifs (1 ou 2)
-# Quand un four tombe en panne, le pizzaiolo appelle POST /four avec {"actifs": 1}
-config_four = {"fours_actifs": 2}
+# 1 four, 2 etages = 2 pizzas max par 15 min
+config_four = {"fours_actifs": 1}
 
 # Ingredients / pizzas indisponibles
-# Format : {"margherita": "plus de tomates", "saumon": "rupture stock"}
 indisponibles = {}
 
 # ──────────────────────────────────────────────
-# CAPACITE
+# CAPACITE ET REGLES PLANNING
 # ──────────────────────────────────────────────
 
-DUREE_CRENEAU = 15  # minutes
+DUREE_CRENEAU   = 15        # minutes entre creneaux
+MAX_PIZZAS      = 2         # 1 four 2 etages = 2 pizzas max par creneau
+HEURE_OUVERTURE = 18*60+15  # 18h15 premiere commande
+HEURE_FERMETURE = 22*60     # 22h00 derniere commande
 
-# Capacite de base par creneau selon nb de fours
 def get_max_pizzas():
-    return config_four["fours_actifs"] * 2
+    return MAX_PIZZAS
+
+def pizzeria_ouverte_aujourd_hui() -> tuple:
+    """Verifie que la pizzeria est ouverte aujourd hui (pas le dimanche)."""
+    jour = datetime.now().weekday()  # 0=lundi ... 6=dimanche
+    if jour == 6:
+        return False, "Desole, la pizzeria est fermee le dimanche. Nous vous attendons des lundi a partir de 18h15 !"
+    return True, ""
+
+def heure_valide(heure_str: str) -> tuple:
+    """Verifie que l heure de retrait est dans les horaires du soir."""
+    m = str_to_min(heure_str)
+    if m < HEURE_OUVERTURE:
+        return False, "Le four n est pas encore pret. Premiere commande possible a 18h15."
+    if m > HEURE_FERMETURE:
+        return False, "Nous n acceptons plus de commandes apres 22h00."
+    return True, ""
+
+def commande_aujourd_hui(heure_str: str) -> tuple:
+    """Verifie que la commande est bien pour ce soir (pas pour un autre jour)."""
+    # On accepte uniquement les commandes pour aujourd hui
+    # Si l heure demandee est inferieure a l heure actuelle - 30min c est suspect
+    maintenant = datetime.now()
+    heure_actuelle_min = maintenant.hour * 60 + maintenant.minute
+    m = str_to_min(heure_str)
+    # Si on est apres 22h et que quelqu un commande, c est trop tard
+    if heure_actuelle_min > HEURE_FERMETURE:
+        return False, "La pizzeria est fermee pour ce soir. Revenez des demain a 18h15 !"
+    return True, ""
 
 # ──────────────────────────────────────────────
 # CARTE COMPLETE AVEC PRIX
@@ -145,8 +173,12 @@ def pizzas_dans_creneau(heure_str: str, exclure_id: int = None) -> int:
 
 def prochain_creneau_libre(heure_str: str, nb_pizzas: int):
     retrait = str_to_min(heure_str)
-    for i in range(0, 120, DUREE_CRENEAU):
+    # On part du creneau demande + 15 min minimum
+    for i in range(DUREE_CRENEAU, 120, DUREE_CRENEAU):
         heure_test = min_to_str(retrait + i)
+        m_test = str_to_min(heure_test)
+        if m_test < HEURE_OUVERTURE or m_test > HEURE_FERMETURE:
+            continue
         if pizzas_dans_creneau(heure_test) + nb_pizzas <= get_max_pizzas():
             return heure_test, True
     return None, False
@@ -203,8 +235,13 @@ def send_whatsapp(message: str) -> bool:
 @app.get("/")
 def home():
     actives = [c for c in commandes_du_jour if not c.get("annulee")]
+    jour = datetime.now().weekday()
+    jours = ["Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche"]
+    ouvert = jour != 6
     return {
         "statut": "Nova Pizzeria API v2",
+        "jour": jours[jour],
+        "ouvert": ouvert,
         "commandes_actives": len(actives),
         "fours_actifs": config_four["fours_actifs"],
         "capacite": str(get_max_pizzas()) + " pizzas par " + str(DUREE_CRENEAU) + "min",
@@ -248,6 +285,21 @@ async def passer_commande(request: Request):
                 "pizza": pizza_principale,
                 "raison": raison_indispo
             })
+
+        # Verifier si la pizzeria est ouverte aujourd hui
+        ok_jour, msg_jour = pizzeria_ouverte_aujourd_hui()
+        if not ok_jour:
+            return JSONResponse({"statut": "ferme", "message": msg_jour})
+
+        # Verifier que c est bien pour ce soir
+        ok_soir, msg_soir = commande_aujourd_hui(heure)
+        if not ok_soir:
+            return JSONResponse({"statut": "ferme", "message": msg_soir})
+
+        # Verifier horaires
+        ok_heure, msg_heure = heure_valide(heure)
+        if not ok_heure:
+            return JSONResponse({"statut": "heure_invalide", "message": msg_heure})
 
         # Verifier la capacite du creneau
         pizzas_prises = pizzas_dans_creneau(heure)
@@ -514,7 +566,7 @@ def voir_indisponibles():
 @app.get("/creneaux")
 def voir_creneaux():
     creneaux = {}
-    for h in range(18 * 60, 22 * 60, DUREE_CRENEAU):
+    for h in range(HEURE_OUVERTURE, HEURE_FERMETURE, DUREE_CRENEAU):
         heure_str = min_to_str(h)
         prises    = pizzas_dans_creneau(heure_str)
         creneaux[heure_str] = {
