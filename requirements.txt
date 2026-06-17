@@ -1,5 +1,7 @@
-fastapi
-uvicorn
-groq
-gtts
-twilio
+fastapi==0.111.0
+uvicorn==0.29.0
+twilio==9.0.5
+groq==0.9.0
+httpx==0.27.0
+python-multipart==0.0.9
+requests==2.32.3
