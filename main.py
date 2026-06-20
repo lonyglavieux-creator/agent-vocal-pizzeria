@@ -11,6 +11,11 @@ from voice_handler import (
     extract_command_from_conversation, needs_to_place_order,
     get_or_create_history, clear_history, conversation_histories
 )
+from database import (
+    sauvegarder_commande, annuler_commande_db, charger_commandes_du_jour,
+    get_commande_by_id, get_fours_actifs, set_fours_actifs,
+    get_indisponibles, set_indisponibles, log_appel, supabase_ok
+)
 
 app = FastAPI()
 
@@ -23,12 +28,32 @@ PIZZAIOLO_TEL    = os.environ.get("PIZZAIOLO_TEL", "+33788705435")
 API_BASE         = os.environ.get("API_BASE_URL", "https://web-production-967e41.up.railway.app")
 
 # ──────────────────────────────────────────────
-# DONNEES DU JOUR
+# DONNEES DU JOUR (memoire + Supabase)
 # ──────────────────────────────────────────────
 
 commandes_du_jour = []
 config_four       = {"fours_actifs": 1}
 indisponibles     = {}
+
+def init_depuis_supabase():
+    """Charge les donnees du jour depuis Supabase au demarrage."""
+    global commandes_du_jour, config_four, indisponibles
+    if not supabase_ok():
+        print("Supabase non configure - mode memoire uniquement")
+        return
+    try:
+        commandes_db = charger_commandes_du_jour()
+        if commandes_db:
+            commandes_du_jour = commandes_db
+            print("Commandes rechargees depuis Supabase : " + str(len(commandes_db)))
+        config_four["fours_actifs"] = get_fours_actifs()
+        indisponibles = get_indisponibles()
+        print("Config rechargee depuis Supabase")
+    except Exception as e:
+        print("Erreur init Supabase : " + str(e))
+
+# Charger au demarrage
+init_depuis_supabase()
 
 # ──────────────────────────────────────────────
 # CAPACITE ET REGLES PLANNING
@@ -340,7 +365,7 @@ async def _enregistrer_commande_auto(cmd_data: dict, call_sid: str):
         lancement   = calcul_lancement(heure, pizza_principale, nb)
         total       = calcul_total(pizzas, nb)
 
-        commandes_du_jour.append({
+        nouvelle_cmd = {
             "id":         commande_id,
             "prenom":     prenom,
             "telephone":  telephone,
@@ -353,7 +378,12 @@ async def _enregistrer_commande_auto(cmd_data: dict, call_sid: str):
             "annulee":    False,
             "created_at": datetime.now().isoformat(),
             "source":     "vocal"
-        })
+        }
+        commandes_du_jour.append(nouvelle_cmd)
+        db_result = sauvegarder_commande(nouvelle_cmd)
+        if db_result and db_result.get("id"):
+            commande_id = db_result["id"]
+            nouvelle_cmd["id"] = commande_id
 
         msg  = "NOUVELLE COMMANDE #" + str(commande_id) + " (appel vocal)\n"
         msg += "Client : " + str(prenom)
@@ -437,12 +467,17 @@ async def passer_commande(request: Request):
         lancement   = calcul_lancement(heure, pizza_principale, nb)
         total       = calcul_total(pizzas, nb)
 
-        commandes_du_jour.append({
+        nouvelle_cmd = {
             "id": commande_id, "prenom": prenom, "telephone": telephone,
             "pizza": pizzas, "nb": nb, "heure": heure, "lancement": lancement,
             "extras": extras, "total": total, "annulee": False,
             "created_at": datetime.now().isoformat(), "source": "api"
-        })
+        }
+        commandes_du_jour.append(nouvelle_cmd)
+        db_result = sauvegarder_commande(nouvelle_cmd)
+        if db_result and db_result.get("id"):
+            commande_id = db_result["id"]
+            nouvelle_cmd["id"] = commande_id
 
         msg  = "NOUVELLE COMMANDE #" + str(commande_id) + "\n"
         msg += "Client : " + str(prenom)
@@ -476,6 +511,8 @@ async def annuler_commande(commande_id: int, request: Request):
         commande["annulee"]           = True
         commande["annulee_at"]        = datetime.now().isoformat()
         commande["raison_annulation"] = raison
+        # Sauvegarder annulation dans Supabase
+        annuler_commande_db(commande_id, raison)
 
         extras_txt = " (" + str(commande["extras"]) + ")" if commande.get("extras") else ""
         tel_txt    = " - " + str(commande["telephone"]) if commande.get("telephone") else ""
@@ -513,6 +550,7 @@ async def modifier_fours(request: Request):
         if actifs not in [0, 1]:
             return JSONResponse({"statut": "erreur", "message": "actifs doit etre 0 ou 1"}, status_code=400)
         config_four["fours_actifs"] = actifs
+        set_fours_actifs(actifs)
         msg = "FOUR EN PANNE - aucune commande acceptee" if actifs == 0 else "FOUR OK - 2 pizzas par 15min"
         send_whatsapp(msg)
         return JSONResponse({"statut": "ok", "fours_actifs": actifs, "message": msg})
@@ -533,6 +571,7 @@ async def ajouter_indisponible(request: Request):
         if not pizza:
             return JSONResponse({"statut": "erreur", "message": "Nom requis"}, status_code=400)
         indisponibles[pizza] = raison
+        set_indisponibles(indisponibles)
         send_whatsapp("INDISPONIBLE : " + pizza + " - " + raison)
         return JSONResponse({"statut": "ok", "pizza": pizza, "raison": raison, "indisponibles": indisponibles})
     except Exception as e:
@@ -543,6 +582,7 @@ async def retirer_indisponible(pizza: str):
     pizza = pizza.lower().strip()
     if pizza in indisponibles:
         del indisponibles[pizza]
+        set_indisponibles(indisponibles)
         return JSONResponse({"statut": "ok", "message": pizza + " de nouveau disponible"})
     return JSONResponse({"statut": "erreur", "message": pizza + " n etait pas bloque"}, status_code=404)
 
