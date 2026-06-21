@@ -1,0 +1,204 @@
+import os
+import httpx
+from datetime import datetime, timedelta
+
+STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+PRIX_MENSUEL = os.environ.get("STRIPE_PRICE_ID", "")
+
+STRIPE_API = "https://api.stripe.com/v1"
+
+def stripe_headers():
+    return {
+        "Authorization": "Bearer " + STRIPE_SECRET_KEY,
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+
+def stripe_ok() -> bool:
+    return bool(STRIPE_SECRET_KEY)
+
+# ──────────────────────────────────────────────
+# CLIENTS
+# ──────────────────────────────────────────────
+
+def creer_client(nom: str, email: str, tel: str = "", pizzeria: str = "") -> dict | None:
+    if not stripe_ok():
+        return None
+    try:
+        data = {
+            "name": nom,
+            "email": email,
+            "phone": tel,
+            "metadata[pizzeria]": pizzeria,
+            "metadata[source]": "nova_ai"
+        }
+        r = httpx.post(STRIPE_API + "/customers", headers=stripe_headers(), data=data, timeout=10)
+        if r.status_code == 200:
+            print("Client Stripe cree : " + r.json().get("id", ""))
+            return r.json()
+        print("Erreur Stripe client : " + r.text)
+        return None
+    except Exception as e:
+        print("Erreur creer_client : " + str(e))
+        return None
+
+def get_client(customer_id: str) -> dict | None:
+    if not stripe_ok():
+        return None
+    try:
+        r = httpx.get(STRIPE_API + "/customers/" + customer_id, headers=stripe_headers(), timeout=10)
+        return r.json() if r.status_code == 200 else None
+    except Exception as e:
+        print("Erreur get_client : " + str(e))
+        return None
+
+# ──────────────────────────────────────────────
+# ABONNEMENTS
+# ──────────────────────────────────────────────
+
+def creer_abonnement(customer_id: str, price_id: str) -> dict | None:
+    if not stripe_ok():
+        return None
+    try:
+        data = {
+            "customer": customer_id,
+            "items[0][price]": price_id,
+            "payment_behavior": "default_incomplete",
+            "expand[]": "latest_invoice.payment_intent"
+        }
+        r = httpx.post(STRIPE_API + "/subscriptions", headers=stripe_headers(), data=data, timeout=10)
+        if r.status_code == 200:
+            print("Abonnement cree : " + r.json().get("id", ""))
+            return r.json()
+        print("Erreur Stripe abonnement : " + r.text)
+        return None
+    except Exception as e:
+        print("Erreur creer_abonnement : " + str(e))
+        return None
+
+def annuler_abonnement(subscription_id: str) -> bool:
+    if not stripe_ok():
+        return False
+    try:
+        r = httpx.delete(
+            STRIPE_API + "/subscriptions/" + subscription_id,
+            headers=stripe_headers(),
+            timeout=10
+        )
+        return r.status_code == 200
+    except Exception as e:
+        print("Erreur annuler_abonnement : " + str(e))
+        return False
+
+def get_abonnement(subscription_id: str) -> dict | None:
+    if not stripe_ok():
+        return None
+    try:
+        r = httpx.get(
+            STRIPE_API + "/subscriptions/" + subscription_id,
+            headers=stripe_headers(),
+            timeout=10
+        )
+        return r.json() if r.status_code == 200 else None
+    except Exception as e:
+        print("Erreur get_abonnement : " + str(e))
+        return None
+
+def lister_abonnements_actifs() -> list:
+    if not stripe_ok():
+        return []
+    try:
+        r = httpx.get(
+            STRIPE_API + "/subscriptions?status=active&limit=100",
+            headers=stripe_headers(),
+            timeout=10
+        )
+        if r.status_code == 200:
+            return r.json().get("data", [])
+        return []
+    except Exception as e:
+        print("Erreur lister_abonnements : " + str(e))
+        return []
+
+# ──────────────────────────────────────────────
+# LIENS DE PAIEMENT
+# ──────────────────────────────────────────────
+
+def creer_lien_paiement(price_id: str, pizzeria: str = "", email: str = "") -> str | None:
+    if not stripe_ok():
+        return None
+    try:
+        data = {
+            "line_items[0][price]": price_id,
+            "line_items[0][quantity]": "1",
+            "mode": "subscription",
+            "success_url": "https://web-production-967e41.up.railway.app/paiement/succes?session_id={CHECKOUT_SESSION_ID}",
+            "cancel_url": "https://web-production-967e41.up.railway.app/paiement/annule",
+            "metadata[pizzeria]": pizzeria,
+            "allow_promotion_codes": "true"
+        }
+        if email:
+            data["customer_email"] = email
+
+        r = httpx.post(
+            STRIPE_API + "/checkout/sessions",
+            headers=stripe_headers(),
+            data=data,
+            timeout=10
+        )
+        if r.status_code == 200:
+            url = r.json().get("url", "")
+            print("Lien paiement cree : " + url[:50])
+            return url
+        print("Erreur lien paiement : " + r.text)
+        return None
+    except Exception as e:
+        print("Erreur creer_lien_paiement : " + str(e))
+        return None
+
+# ──────────────────────────────────────────────
+# WEBHOOK
+# ──────────────────────────────────────────────
+
+def verifier_webhook(payload: bytes, signature: str) -> dict | None:
+    try:
+        import hmac
+        import hashlib
+        parts = {}
+        for item in signature.split(","):
+            k, v = item.split("=", 1)
+            parts[k] = v
+        timestamp = parts.get("t", "")
+        sig = parts.get("v1", "")
+        signed_payload = timestamp + "." + payload.decode("utf-8")
+        expected = hmac.new(
+            STRIPE_WEBHOOK_SECRET.encode(),
+            signed_payload.encode(),
+            hashlib.sha256
+        ).hexdigest()
+        if hmac.compare_digest(expected, sig):
+            import json
+            return json.loads(payload)
+        return None
+    except Exception as e:
+        print("Erreur webhook verification : " + str(e))
+        return None
+
+def statut_abonnement(subscription: dict) -> str:
+    statut = subscription.get("status", "")
+    if statut == "active":
+        return "actif"
+    elif statut == "past_due":
+        return "en_retard"
+    elif statut == "canceled":
+        return "annule"
+    elif statut == "trialing":
+        return "essai"
+    return statut
+
+def prochaine_facturation(subscription: dict) -> str:
+    ts = subscription.get("current_period_end", 0)
+    if ts:
+        dt = datetime.fromtimestamp(ts)
+        return dt.strftime("%d/%m/%Y")
+    return "inconnue"
