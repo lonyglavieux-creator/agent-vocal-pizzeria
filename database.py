@@ -1,210 +1,159 @@
-Importer os
-Importer json
-Importer httpx
-à partir de datetime datetime d'importation
+import os
+import json
+import httpx
+from datetime import datetime
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
 def get_headers():
-    retour {
+    return {
         "apikey": SUPABASE_KEY,
-        "Autorisation": "Porteur" + SUPABASE_KEY,
-        "Type de contenu": "application/json",
-        "Préférer": "retour = représentation"
+        "Authorization": "Bearer " + SUPABASE_KEY,
+        "Content-Type": "application/json",
+        "Prefer": "return=representation"
     }
 
 def supabase_ok() -> bool:
-    retour bool(SUPABASE_URL et SUPABASE_KEY)
+    return bool(SUPABASE_URL and SUPABASE_KEY)
 
-# ────────────────────────────────────────────────────────────────────────────────�──────�───────
-# COMMANDES
-# ────────────────────────────────────────────────────────────────────────────────�──────�───────
-
-def protected_commande(commande: dict) -> dict | Aucun:
-    sinon supabase_ok():
-        print("Supabase non configure - commande non sauvegarde")
-        Retour Aucun
-    Essayez:
-        charge utile = {
-            "prenom": command.get("prenom", "?"),
-            "téléphone": command.get("téléphone", ""),
-            "pizza": command.get("pizza", "?"),
-            "nb": command.get("nb", 1),
-            "heure": command.get("heure", ""),
-            "lancement": command.get("lancement", ""),
-            "extras": command.get("extras", ""),
-            "total": command.get("total", 0),
-            "annulé": faux,
-            "source": command.get("source", "vocal")
+def sauvegarder_commande(commande: dict):
+    if not supabase_ok():
+        return None
+    try:
+        payload = {
+            "prenom": commande.get("prenom", "?"),
+            "telephone": commande.get("telephone", ""),
+            "pizza": commande.get("pizza", "?"),
+            "nb": commande.get("nb", 1),
+            "heure": commande.get("heure", ""),
+            "lancement": commande.get("lancement", ""),
+            "extras": commande.get("extras", ""),
+            "total": commande.get("total", 0),
+            "annulee": False,
+            "source": commande.get("source", "vocal")
         }
         r = httpx.post(
             SUPABASE_URL + "/rest/v1/commandes",
             headers=get_headers(),
             json=payload,
-            temps mort = 10
+            timeout=10
         )
-        si r.status_code in [200, 201]:
-            données = r.json()
-            print("Commande sauvegarde Supabase ID: " + str(data[0].get("id")))
-            Données de retour[0]
-        autre:
-            print("Erreur Supabase save : " + str(r.status_code) + " " + r.text)
-            Retour Aucun
-    sauf Exception comme e:
-        print("Erreur Supabase : " + str(e))
-        Retour Aucun
+        if r.status_code in [200, 201]:
+            data = r.json()
+            print("Supabase OK - commande ID : " + str(data[0].get("id")))
+            return data[0]
+        else:
+            print("Erreur Supabase : " + str(r.status_code))
+            return None
+    except Exception as e:
+        print("Erreur sauvegarder_commande : " + str(e))
+        return None
 
-
-def_commande_db(commande_id: int, raison: str) -> bol:
-    sinon supabase_ok():
-        Retour Faux
-    Essayez:
-        charge utile = {
-            "annulés": Vrai,
+def annuler_commande_db(commande_id: int, raison: str) -> bool:
+    if not supabase_ok():
+        return False
+    try:
+        payload = {
+            "annulee": True,
             "annulee_at": datetime.now().isoformat(),
             "raison_annulation": raison
         }
         r = httpx.patch(
-            SUPABASE_URL + "/rest/v1/commandes? id=eq." + str(commande_id),
+            SUPABASE_URL + "/rest/v1/commandes?id=eq." + str(commande_id),
             headers=get_headers(),
             json=payload,
-            temps mort = 10
+            timeout=10
         )
-        retour r.status_code in [200, 204]
-    sauf Exception comme e:
-        print("Erreur annulation Supabase: " + str(e))
-        Retour Faux
+        return r.status_code in [200, 204]
+    except Exception as e:
+        print("Erreur annuler_commande_db : " + str(e))
+        return False
 
-
-def charger_commandes_du_jour() -> liste:
-    sinon supabase_ok():
-        retour []
-    Essayez:
+def charger_commandes_du_jour() -> list:
+    if not supabase_ok():
+        return []
+    try:
         aujourd_hui = datetime.now().strftime("%Y-%m-%d")
         r = httpx.get(
-            SUPABASE_URL + "/rest/v1/commandes? created_at=gte." + aujourd'hui_hui + "T00:00:00&order=created_at.asc",
+            SUPABASE_URL + "/rest/v1/commandes?created_at=gte." + aujourd_hui + "T00:00:00&order=created_at.asc",
             headers=get_headers(),
-            temps mort = 10
+            timeout=10
         )
-        si r.status_code == 200:
-            commandes = r.json()
-            print("Commandes charges Subase: " + str(len(commandes)))
-            commandes de retour
-        retour []
-    sauf Exception comme e:
-        print("Erreur Chargement Supabase: " + str(e))
-        retour []
-
-
-def get_commande_by_id(commande_id: int) -> dict | Aucun:
-    sinon supabase_ok():
-        Retour Aucun
-    Essayez:
-        r = httpx.get(
-            SUPABASE_URL + "/rest/v1/commandes? id=eq." + str(commande_id),
-            headers=get_headers(),
-            temps mort = 10
-        )
-        si r.status_code == 200:
-            données = r.json()
-            retourner des données[0] si les données autres Aucune
-        Retour Aucun
-    sauf Exception comme e:
-        print("Erreur get commande : " + str(e))
-        Retour Aucun
-
-
-# ────────────────────────────────────────────────────────────────────────────────�──────�───────
-# CONFIG (quatre + in available)
-# ────────────────────────────────────────────────────────────────────────────────�──────�───────
+        if r.status_code == 200:
+            return r.json()
+        return []
+    except Exception as e:
+        print("Erreur charger_commandes_du_jour : " + str(e))
+        return []
 
 def get_config(cle: str, defaut: str = "") -> str:
-    sinon supabase_ok():
-        Retour de défaut
-    Essayez:
+    if not supabase_ok():
+        return defaut
+    try:
         r = httpx.get(
-            SUPABASE_URL + "/rest/v1/config? cle=eq." + cle,
+            SUPABASE_URL + "/rest/v1/config?cle=eq." + cle,
             headers=get_headers(),
-            temps mort = 10
+            timeout=10
         )
-        si r.status_code == 200:
-            données = r.json()
-            retour de données[0]["valeur"] si les données autrement déchéance
-        Retour de défaut
-    sauf Exception comme e:
-        print("Erreur get config : " + str(e))
-        Retour de défaut
-
+        if r.status_code == 200:
+            data = r.json()
+            return data[0]["valeur"] if data else defaut
+        return defaut
+    except Exception as e:
+        print("Erreur get_config : " + str(e))
+        return defaut
 
 def set_config(cle: str, valeur: str) -> bool:
-    sinon supabase_ok():
-        Retour Faux
-    Essayez:
+    if not supabase_ok():
+        return False
+    try:
         r = httpx.patch(
-            SUPABASE_URL + "/rest/v1/config? cle=eq." + cle,
+            SUPABASE_URL + "/rest/v1/config?cle=eq." + cle,
             headers=get_headers(),
             json={"valeur": valeur},
-            temps mort = 10
+            timeout=10
         )
-        si r.status_code in [200, 204]:
-            Retour True
-        # Si la cle n existe pas encore, sur l insere
+        if r.status_code in [200, 204]:
+            return True
         r2 = httpx.post(
             SUPABASE_URL + "/rest/v1/config",
             headers=get_headers(),
             json={"cle": cle, "valeur": valeur},
-            temps mort = 10
+            timeout=10
         )
-        retourner r2.status_code dans [200, 201]
-    sauf Exception comme e:
-        print("Erreur set config: " + str(e))
-        Retour Faux
-
+        return r2.status_code in [200, 201]
+    except Exception as e:
+        print("Erreur set_config : " + str(e))
+        return False
 
 def get_fours_actifs() -> int:
-    val = get_config("fours_actifs", "1")
-    Essayez:
-        Retour int(val)
-    sauf:
-        Retour 1
-
+    try:
+        return int(get_config("fours_actifs", "1"))
+    except:
+        return 1
 
 def set_fours_actifs(nb: int) -> bool:
-    retour set_config("fours_actifs", str(nb))
-
+    return set_config("fours_actifs", str(nb))
 
 def get_indisponibles() -> dict:
-    val = get_config("invalites", "{}")
-    Essayez:
-        retour json.loads(val)
-    sauf:
-        retour {}
-
+    try:
+        return json.loads(get_config("indisponibles", "{}"))
+    except:
+        return {}
 
 def set_indisponibles(indispo: dict) -> bool:
-    retour set_config("indisponibles", json.dumps(indispo))
+    return set_config("indisponibles", json.dumps(indispo))
 
-
-# ────────────────────────────────────────────────────────────────────────────────�──────�───────
-# JOURNAUX APPELS
-# ────────────────────────────────────────────────────────────────────────────────�──────�───────
-
-def log_appel(call_sid: str, prenom: str = "", dure_min: float = 0, command_id: int = Aucun):
-    sinon supabase_ok():
-        retour
-    Essayez:
-        charge utile = {
-            "call_sid": call_sid,
-            "prenom": prenom,
-            "duree_min": duree_min,
-            "commande_id": command_id
-        }
+def log_appel(call_sid: str, prenom: str = "", duree_min: float = 0, commande_id: int = None):
+    if not supabase_ok():
+        return
+    try:
         httpx.post(
             SUPABASE_URL + "/rest/v1/logs_appels",
             headers=get_headers(),
-            json=payload,
+            json={"call_sid": call_sid, "prenom": prenom, "duree_min": duree_min, "commande_id": commande_id},
             timeout=5
         )
-    sauf Exception comme e:
-        print("Erreur log appel : " + str(e))
+    except Exception as e:
+        print("Erreur log_appel : " + str(e))
