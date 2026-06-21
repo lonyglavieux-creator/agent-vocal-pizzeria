@@ -157,3 +157,20 @@ def log_appel(call_sid: str, prenom: str = "", duree_min: float = 0, commande_id
         )
     except Exception as e:
         print("Erreur log_appel : " + str(e))
+
+def get_commande_by_id(commande_id: int):
+    if not supabase_ok():
+        return None
+    try:
+        r = httpx.get(
+            SUPABASE_URL + "/rest/v1/commandes?id=eq." + str(commande_id),
+            headers=get_headers(),
+            timeout=10
+        )
+        if r.status_code == 200:
+            data = r.json()
+            return data[0] if data else None
+        return None
+    except Exception as e:
+        print("Erreur get_commande_by_id : " + str(e))
+        return None
