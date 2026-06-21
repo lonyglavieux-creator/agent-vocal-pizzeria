@@ -635,3 +635,133 @@ def voir_carte():
 @app.get("/admin")
 def admin_page():
     return FileResponse("admin.html")
+
+# ──────────────────────────────────────────────
+# ROUTES STRIPE
+# ──────────────────────────────────────────────
+
+@app.post("/stripe/client")
+async def nouveau_client_stripe(request: Request):
+    try:
+        from abonnements import creer_client_nova
+        data = await request.json()
+        nom      = data.get("nom", "")
+        email    = data.get("email", "")
+        tel      = data.get("telephone", "")
+        pizzeria = data.get("pizzeria", "")
+        if not nom or not email:
+            return JSONResponse({"statut": "erreur", "message": "Nom et email requis"}, status_code=400)
+        client = creer_client_nova(nom, email, tel, pizzeria)
+        if not client:
+            return JSONResponse({"statut": "erreur", "message": "Erreur creation client"}, status_code=500)
+        return JSONResponse({
+            "statut": "ok",
+            "message": "Client cree - lien de paiement genere",
+            "lien_paiement": client.get("lien_paiement", ""),
+            "stripe_customer_id": client.get("stripe_customer_id", "")
+        })
+    except Exception as e:
+        return JSONResponse({"statut": "erreur", "message": str(e)}, status_code=500)
+
+
+@app.post("/stripe/webhook")
+async def stripe_webhook(request: Request):
+    try:
+        from abonnements import activer_client, desactiver_client, send_whatsapp_notification
+        from stripe_handler import verifier_webhook
+        payload   = await request.body()
+        signature = request.headers.get("stripe-signature", "")
+        event     = verifier_webhook(payload, signature)
+        if not event:
+            return JSONResponse({"statut": "erreur", "message": "Signature invalide"}, status_code=400)
+
+        event_type = event.get("type", "")
+        data_obj   = event.get("data", {}).get("object", {})
+        print("Webhook Stripe : " + event_type)
+
+        if event_type == "customer.subscription.created":
+            customer_id     = data_obj.get("customer", "")
+            subscription_id = data_obj.get("id", "")
+            activer_client(customer_id, subscription_id)
+
+        elif event_type == "customer.subscription.deleted":
+            customer_id = data_obj.get("customer", "")
+            desactiver_client(customer_id)
+
+        elif event_type == "invoice.payment_failed":
+            customer_id = data_obj.get("customer", "")
+            print("Paiement echoue pour : " + customer_id)
+
+        return JSONResponse({"statut": "ok"})
+    except Exception as e:
+        print("Erreur webhook : " + str(e))
+        return JSONResponse({"statut": "erreur", "message": str(e)}, status_code=500)
+
+
+@app.get("/paiement/succes")
+async def paiement_succes(request: Request):
+    session_id = request.query_params.get("session_id", "")
+    html = """<!DOCTYPE html>
+<html lang="fr">
+<head><meta charset="UTF-8"><title>Paiement confirme - Nova.AI</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#F8F9FC;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+.box{background:white;border-radius:16px;padding:48px;text-align:center;max-width:440px;box-shadow:0 4px 24px rgba(0,0,0,.08)}
+.icon{font-size:64px;margin-bottom:16px}
+h1{font-size:24px;color:#0D1524;margin-bottom:8px}
+p{color:#5A677E;font-size:15px;line-height:1.6;margin-bottom:24px}
+.btn{display:inline-block;background:#1A6EF5;color:white;padding:12px 28px;border-radius:10px;text-decoration:none;font-weight:600}
+</style></head>
+<body>
+<div class="box">
+<div class="icon">🎉</div>
+<h1>Paiement confirme !</h1>
+<p>Votre abonnement Nova.AI est actif. Vous allez recevoir les instructions de configuration par email dans quelques minutes.</p>
+<a href="https://web-production-967e41.up.railway.app" class="btn">Retour au site</a>
+</div>
+</body></html>"""
+    return HTMLResponse(content=html)
+
+
+@app.get("/paiement/annule")
+def paiement_annule():
+    html = """<!DOCTYPE html>
+<html lang="fr">
+<head><meta charset="UTF-8"><title>Paiement annule - Nova.AI</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#F8F9FC;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+.box{background:white;border-radius:16px;padding:48px;text-align:center;max-width:440px;box-shadow:0 4px 24px rgba(0,0,0,.08)}
+.icon{font-size:64px;margin-bottom:16px}
+h1{font-size:24px;color:#0D1524;margin-bottom:8px}
+p{color:#5A677E;font-size:15px;line-height:1.6;margin-bottom:24px}
+.btn{display:inline-block;background:#1A6EF5;color:white;padding:12px 28px;border-radius:10px;text-decoration:none;font-weight:600}
+</style></head>
+<body>
+<div class="box">
+<div class="icon">😕</div>
+<h1>Paiement annule</h1>
+<p>Votre paiement a ete annule. Aucun montant n a ete debite. Revenez quand vous voulez !</p>
+<a href="https://web-production-967e41.up.railway.app" class="btn">Retour au site</a>
+</div>
+</body></html>"""
+    return HTMLResponse(content=html)
+
+
+@app.get("/clients")
+async def voir_clients(request: Request):
+    try:
+        from abonnements import get_clients_actifs
+        clients = get_clients_actifs()
+        abonnements = []
+        try:
+            from stripe_handler import lister_abonnements_actifs, statut_abonnement, prochaine_facturation
+            abonnements = lister_abonnements_actifs()
+        except:
+            pass
+        return JSONResponse({
+            "clients_nova": clients,
+            "nb_clients": len(clients),
+            "abonnements_stripe": len(abonnements)
+        })
+    except Exception as e:
+        return JSONResponse({"statut": "erreur", "message": str(e)}, status_code=500)
