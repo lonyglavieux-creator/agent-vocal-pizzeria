@@ -17,6 +17,45 @@ from database import (
     get_indisponibles, set_indisponibles, log_appel, supabase_ok
 )
 
+# Cache statut client (mis a jour toutes les heures)
+_cache_statut = {"actif": True, "last_check": None}
+
+def nova_est_active() -> bool:
+    from datetime import datetime, timedelta
+    import httpx
+    global _cache_statut
+    now = datetime.now()
+    # Verifier toutes les heures
+    if _cache_statut["last_check"] and (now - _cache_statut["last_check"]) < timedelta(hours=1):
+        return _cache_statut["actif"]
+    try:
+        SUPABASE_URL_CHECK = os.environ.get("SUPABASE_URL", "")
+        SUPABASE_KEY_CHECK = os.environ.get("SUPABASE_KEY", "")
+        PIZZERIA_EMAIL     = os.environ.get("PIZZERIA_EMAIL", "")
+        if not (SUPABASE_URL_CHECK and SUPABASE_KEY_CHECK and PIZZERIA_EMAIL):
+            _cache_statut = {"actif": True, "last_check": now}
+            return True
+        r = httpx.get(
+            SUPABASE_URL_CHECK + "/rest/v1/clients_nova?email=eq." + PIZZERIA_EMAIL,
+            headers={
+                "apikey": SUPABASE_KEY_CHECK,
+                "Authorization": "Bearer " + SUPABASE_KEY_CHECK
+            },
+            timeout=5
+        )
+        if r.status_code == 200:
+            data = r.json()
+            if data:
+                statut = data[0].get("statut", "actif")
+                est_actif = statut == "actif"
+                _cache_statut = {"actif": est_actif, "last_check": now}
+                return est_actif
+        _cache_statut = {"actif": True, "last_check": now}
+        return True
+    except Exception as e:
+        print("Erreur verif statut Nova : " + str(e))
+        return True
+
 app = FastAPI()
 
 twilio_client = TwilioClient(
@@ -253,6 +292,16 @@ async def voice_incoming(request: Request):
     form    = await request.form()
     call_sid = str(form.get("CallSid", "unknown"))
     clear_history(call_sid)
+
+    # Verifier si abonnement actif
+    if not nova_est_active():
+        resp = VoiceResponse()
+        resp.say(
+            "Bonjour. Ce service est temporairement indisponible. Veuillez contacter le responsable. Merci.",
+            voice="Polly.Lea", language="fr-FR"
+        )
+        resp.hangup()
+        return Response(content=str(resp), media_type="application/xml")
 
     ok_jour, msg_jour = pizzeria_ouverte_aujourd_hui()
     if not ok_jour:
@@ -683,10 +732,23 @@ async def stripe_webhook(request: Request):
             customer_id     = data_obj.get("customer", "")
             subscription_id = data_obj.get("id", "")
             activer_client(customer_id, subscription_id)
+            # Reactiver Nova
+            global _cache_statut
+            _cache_statut = {"actif": True, "last_check": None}
+            print("Nova reactivee via webhook Stripe")
 
         elif event_type == "customer.subscription.deleted":
             customer_id = data_obj.get("customer", "")
             desactiver_client(customer_id)
+            # Desactiver Nova
+            _cache_statut = {"actif": False, "last_check": None}
+            print("Nova desactivee via webhook Stripe")
+
+        elif event_type == "invoice.payment_succeeded":
+            customer_id = data_obj.get("customer", "")
+            # Paiement recu - reactiver si besoin
+            _cache_statut = {"actif": True, "last_check": None}
+            print("Paiement recu - Nova reactivee : " + customer_id)
 
         elif event_type == "invoice.payment_failed":
             customer_id = data_obj.get("customer", "")
@@ -746,6 +808,39 @@ p{color:#5A677E;font-size:15px;line-height:1.6;margin-bottom:24px}
 </body></html>"""
     return HTMLResponse(content=html)
 
+
+# ──────────────────────────────────────────────
+# ROUTES NOTIFICATIONS
+# ──────────────────────────────────────────────
+
+@app.post("/notifications/run")
+async def run_notifications(request: Request):
+    try:
+        from notifications import run_notifications_j1
+        result = run_notifications_j1()
+        return JSONResponse({"statut": "ok", "result": result})
+    except Exception as e:
+        return JSONResponse({"statut": "erreur", "message": str(e)}, status_code=500)
+
+@app.get("/nova/statut")
+def statut_nova():
+    actif = nova_est_active()
+    return JSONResponse({
+        "nova_active": actif,
+        "message": "Nova est active" if actif else "Nova est desactivee - abonnement expire"
+    })
+
+@app.post("/nova/activer")
+async def activer_nova(request: Request):
+    global _cache_statut
+    _cache_statut = {"actif": True, "last_check": None}
+    return JSONResponse({"statut": "ok", "message": "Nova reactivee"})
+
+@app.post("/nova/desactiver")
+async def desactiver_nova(request: Request):
+    global _cache_statut
+    _cache_statut = {"actif": False, "last_check": None}
+    return JSONResponse({"statut": "ok", "message": "Nova desactivee"})
 
 @app.get("/clients")
 async def voir_clients(request: Request):
