@@ -1012,10 +1012,23 @@ async def ajouter_pizzeria(request: Request):
 @app.get("/pizzeria/{pizzeria_id}")
 async def voir_pizzeria(pizzeria_id: int):
     try:
-        from pizzeria_config import get_pizzeria_by_id, get_menu, get_commandes_du_jour_v2
-        pizzeria = get_pizzeria_by_id(pizzeria_id)
-        if not pizzeria:
+        from pizzeria_config import get_menu, get_commandes_du_jour_v2
+        import httpx as _httpx
+        _url = os.environ.get("SUPABASE_URL", "")
+        _key = os.environ.get("SUPABASE_KEY", "")
+        _headers = {
+            "apikey": _key,
+            "Authorization": "Bearer " + _key,
+            "Content-Type": "application/json"
+        }
+        r = _httpx.get(
+            _url + "/rest/v1/pizzerias?id=eq." + str(pizzeria_id),
+            headers=_headers,
+            timeout=10
+        )
+        if r.status_code != 200 or not r.json():
             return JSONResponse({"statut": "erreur", "message": "Pizzeria introuvable"}, status_code=404)
+        pizzeria = r.json()[0]
         menu      = get_menu(pizzeria_id)
         commandes = get_commandes_du_jour_v2(pizzeria_id)
         actives   = [c for c in commandes if not c.get("annulee")]
