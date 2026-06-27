@@ -32,14 +32,12 @@ def enregistrer_minutes(pizzeria_id: int, duree_secondes: float):
     duree_min = round(duree_secondes / 60, 2)
     mois = datetime.now().strftime("%Y-%m")
     try:
-        # Chercher si un compteur existe pour ce mois
         r = httpx.get(
             SUPABASE_URL + "/rest/v1/minutes_usage?pizzeria_id=eq." + str(pizzeria_id) + "&mois=eq." + mois,
             headers=get_headers_sb(),
             timeout=10
         )
         if r.status_code == 200 and r.json():
-            # Mettre a jour le compteur existant
             existing = r.json()[0]
             new_total = round(existing["minutes_utilisees"] + duree_min, 2)
             httpx.patch(
@@ -49,7 +47,7 @@ def enregistrer_minutes(pizzeria_id: int, duree_secondes: float):
                 timeout=10
             )
         else:
-            # Creer un nouveau compteur
+            new_total = duree_min
             httpx.post(
                 SUPABASE_URL + "/rest/v1/minutes_usage",
                 headers=get_headers_sb(),
@@ -58,13 +56,121 @@ def enregistrer_minutes(pizzeria_id: int, duree_secondes: float):
                     "mois": mois,
                     "minutes_utilisees": duree_min,
                     "minutes_facturees": 0,
-                    "depassement_facture": False
+                    "depassement_facture": False,
+                    "tranches_facturees": 0
                 },
                 timeout=10
             )
         print("Minutes enregistrees : " + str(duree_min) + " min pour pizzeria " + str(pizzeria_id))
+
+        # Verifier si une nouvelle tranche de 100 min est depassee et facturer immediatement
+        verifier_et_facturer_tranche(pizzeria_id, new_total, mois)
+
     except Exception as e:
         print("Erreur enregistrer_minutes : " + str(e))
+
+
+def verifier_et_facturer_tranche(pizzeria_id: int, total_min: float, mois: str):
+    """Facture automatiquement chaque nouvelle tranche de 100 min depassant le quota inclus."""
+    if total_min <= MINUTES_INCLUSES:
+        return
+
+    depassement = total_min - MINUTES_INCLUSES
+    tranches_dues = int(depassement / 100)
+
+    if tranches_dues <= 0:
+        return
+
+    try:
+        # Recuperer le nombre de tranches deja facturees
+        r = httpx.get(
+            SUPABASE_URL + "/rest/v1/minutes_usage?pizzeria_id=eq." + str(pizzeria_id) + "&mois=eq." + mois,
+            headers=get_headers_sb(),
+            timeout=10
+        )
+        if r.status_code != 200 or not r.json():
+            return
+
+        usage = r.json()[0]
+        tranches_facturees = usage.get("tranches_facturees", 0)
+        nouvelles_tranches = tranches_dues - tranches_facturees
+
+        if nouvelles_tranches <= 0:
+            return
+
+        # Recuperer stripe_customer_id de la pizzeria
+        rp = httpx.get(
+            SUPABASE_URL + "/rest/v1/pizzerias?id=eq." + str(pizzeria_id),
+            headers=get_headers_sb(),
+            timeout=10
+        )
+        if rp.status_code != 200 or not rp.json():
+            return
+
+        pizzeria = rp.json()[0]
+        customer_id = pizzeria.get("stripe_customer_id", "")
+        if not customer_id:
+            print("Pas de stripe_customer_id pour pizzeria " + str(pizzeria_id) + " - depassement note mais non facture")
+            return
+
+        montant = round(nouvelles_tranches * PRIX_100_MIN, 2)
+        montant_centimes = int(montant * 100)
+
+        # Facturer immediatement via Stripe
+        r_item = httpx.post(
+            STRIPE_API + "/invoiceitems",
+            headers=stripe_headers(),
+            data={
+                "customer": customer_id,
+                "amount": str(montant_centimes),
+                "currency": "eur",
+                "description": "Nova.AI depassement " + mois + " : " + str(nouvelles_tranches) + " x 100min = " + str(montant) + "EUR"
+            },
+            timeout=10
+        )
+
+        if r_item.status_code != 200:
+            print("Erreur Stripe invoice item : " + r_item.text)
+            return
+
+        # Creer et finaliser la facture immediatement
+        r_inv = httpx.post(
+            STRIPE_API + "/invoices",
+            headers=stripe_headers(),
+            data={
+                "customer": customer_id,
+                "auto_advance": "true",
+                "collection_method": "charge_automatically"
+            },
+            timeout=10
+        )
+
+        if r_inv.status_code == 200:
+            invoice_id = r_inv.json().get("id", "")
+            httpx.post(
+                STRIPE_API + "/invoices/" + invoice_id + "/finalize",
+                headers=stripe_headers(),
+                timeout=10
+            )
+
+            # Mettre a jour les tranches facturees dans Supabase
+            httpx.patch(
+                SUPABASE_URL + "/rest/v1/minutes_usage?pizzeria_id=eq." + str(pizzeria_id) + "&mois=eq." + mois,
+                headers=get_headers_sb(),
+                json={
+                    "tranches_facturees": tranches_dues,
+                    "montant_facture": round((usage.get("montant_facture", 0) or 0) + montant, 2),
+                    "updated_at": datetime.now().isoformat()
+                },
+                timeout=10
+            )
+
+            print("Facture automatique : " + str(montant) + "EUR (" + str(nouvelles_tranches) + " tranches) pour pizzeria " + str(pizzeria_id))
+        else:
+            print("Erreur creation facture Stripe : " + r_inv.text)
+
+    except Exception as e:
+        print("Erreur verifier_et_facturer_tranche : " + str(e))
 
 
 def get_minutes_mois(pizzeria_id: int, mois: str = None) -> dict:
