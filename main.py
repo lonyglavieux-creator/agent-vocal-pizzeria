@@ -293,8 +293,17 @@ async def voice_incoming(request: Request):
     call_sid = str(form.get("CallSid", "unknown"))
     clear_history(call_sid)
 
+    # Detecter la pizzeria via le numero appele
+    called_number = str(form.get("Called", form.get("To", "")))
+    pizzeria = None
+    try:
+        from pizzeria_config import get_pizzeria_by_numero, get_menu, generer_prompt_pizzeria
+        pizzeria = get_pizzeria_by_numero(called_number)
+    except Exception as e:
+        print("Erreur detection pizzeria : " + str(e))
+
     # Verifier si abonnement actif
-    if not nova_est_active():
+    if pizzeria and not pizzeria.get("actif", True):
         resp = VoiceResponse()
         resp.say(
             "Bonjour. Ce service est temporairement indisponible. Veuillez contacter le responsable. Merci.",
@@ -302,6 +311,16 @@ async def voice_incoming(request: Request):
         )
         resp.hangup()
         return Response(content=str(resp), media_type="application/xml")
+
+    if not pizzeria:
+        if not nova_est_active():
+            resp = VoiceResponse()
+            resp.say(
+                "Bonjour. Ce service est temporairement indisponible. Merci.",
+                voice="Polly.Lea", language="fr-FR"
+            )
+            resp.hangup()
+            return Response(content=str(resp), media_type="application/xml")
 
     ok_jour, msg_jour = pizzeria_ouverte_aujourd_hui()
     if not ok_jour:
@@ -383,6 +402,18 @@ async def voice_respond(request: Request):
 
     if fin_appel:
         clear_history(call_sid)
+        # Enregistrer les minutes consommees
+        try:
+            from minutes_tracker import enregistrer_minutes
+            from pizzeria_config import get_pizzeria_by_numero
+            called = str(form.get("Called", form.get("To", "")))
+            pizzeria_fin = get_pizzeria_by_numero(called)
+            if pizzeria_fin:
+                duree = float(form.get("CallDuration", 0))
+                if duree > 0:
+                    enregistrer_minutes(pizzeria_fin["id"], duree)
+        except Exception as e:
+            print("Erreur enregistrement minutes : " + str(e))
 
     return Response(content=twiml, media_type="application/xml")
 
@@ -813,6 +844,81 @@ p{color:#5A677E;font-size:15px;line-height:1.6;margin-bottom:24px}
 # ROUTES NOTIFICATIONS
 # ──────────────────────────────────────────────
 
+# ──────────────────────────────────────────────
+# ROUTES MINUTES ET FACTURATION
+# ──────────────────────────────────────────────
+
+@app.get("/minutes/{pizzeria_id}")
+async def voir_minutes(pizzeria_id: int):
+    try:
+        from minutes_tracker import get_minutes_mois
+        usage = get_minutes_mois(pizzeria_id)
+        return JSONResponse(usage)
+    except Exception as e:
+        return JSONResponse({"statut": "erreur", "message": str(e)}, status_code=500)
+
+@app.post("/facturation/run")
+async def run_facturation(request: Request):
+    try:
+        from minutes_tracker import run_facturation_mensuelle
+        result = run_facturation_mensuelle()
+        return JSONResponse(result)
+    except Exception as e:
+        return JSONResponse({"statut": "erreur", "message": str(e)}, status_code=500)
+
+@app.post("/facturation/{pizzeria_id}")
+async def facturer_pizzeria(pizzeria_id: int, request: Request):
+    try:
+        from minutes_tracker import facturer_depassement
+        from pizzeria_config import get_pizzeria_by_id
+        pizzeria = get_pizzeria_by_id(pizzeria_id)
+        if not pizzeria:
+            return JSONResponse({"statut": "erreur", "message": "Pizzeria introuvable"}, status_code=404)
+        customer_id = pizzeria.get("stripe_customer_id", "")
+        if not customer_id:
+            return JSONResponse({"statut": "erreur", "message": "Pas de stripe_customer_id"}, status_code=400)
+        result = facturer_depassement(pizzeria_id, customer_id)
+        return JSONResponse(result)
+    except Exception as e:
+        return JSONResponse({"statut": "erreur", "message": str(e)}, status_code=500)
+
+@app.get("/dashboard")
+async def dashboard():
+    try:
+        from pizzeria_config import get_toutes_pizzerias
+        from minutes_tracker import get_minutes_mois
+        pizzerias = get_toutes_pizzerias()
+        mois = datetime.now().strftime("%Y-%m")
+        total_revenu = 0
+        total_benef = 0
+        data_pizzerias = []
+        for p in pizzerias:
+            usage = get_minutes_mois(p["id"])
+            abonnement = 59.0
+            depassement = usage.get("montant_depassement", 0)
+            revenu = abonnement + depassement
+            cout_min = usage.get("minutes_utilisees", 0) * 0.021
+            cout_total = cout_min + 1 + (revenu * 0.029) + 0.30
+            benef = round(revenu - cout_total, 2)
+            total_revenu += revenu
+            total_benef += benef
+            data_pizzerias.append({
+                "nom": p["nom"],
+                "actif": p["actif"],
+                "minutes": usage.get("minutes_utilisees", 0),
+                "revenu_mois": round(revenu, 2),
+                "benefice_mois": benef
+            })
+        return JSONResponse({
+            "mois": mois,
+            "nb_pizzerias_actives": len([p for p in pizzerias if p["actif"]]),
+            "revenu_total": round(total_revenu, 2),
+            "benefice_total": round(total_benef, 2),
+            "pizzerias": data_pizzerias
+        })
+    except Exception as e:
+        return JSONResponse({"statut": "erreur", "message": str(e)}, status_code=500)
+
 @app.post("/notifications/run")
 async def run_notifications(request: Request):
     try:
@@ -846,17 +952,134 @@ async def desactiver_nova(request: Request):
 async def voir_clients(request: Request):
     try:
         from abonnements import get_clients_actifs
+        from pizzeria_config import get_toutes_pizzerias
         clients = get_clients_actifs()
+        pizzerias = get_toutes_pizzerias()
         abonnements = []
         try:
-            from stripe_handler import lister_abonnements_actifs, statut_abonnement, prochaine_facturation
+            from stripe_handler import lister_abonnements_actifs
             abonnements = lister_abonnements_actifs()
         except:
             pass
         return JSONResponse({
             "clients_nova": clients,
+            "pizzerias": pizzerias,
             "nb_clients": len(clients),
+            "nb_pizzerias": len(pizzerias),
             "abonnements_stripe": len(abonnements)
         })
+    except Exception as e:
+        return JSONResponse({"statut": "erreur", "message": str(e)}, status_code=500)
+
+# ──────────────────────────────────────────────
+# ROUTES MULTI-CLIENT
+# ──────────────────────────────────────────────
+
+@app.post("/pizzeria/ajouter")
+async def ajouter_pizzeria(request: Request):
+    try:
+        from pizzeria_config import creer_pizzeria, ajouter_pizza_menu
+        data = await request.json()
+        nom      = data.get("nom", "")
+        email    = data.get("email", "")
+        tel      = data.get("telephone_proprietaire", "")
+        numero   = data.get("numero_twilio", "")
+        ville    = data.get("ville", "")
+        if not nom or not email or not numero:
+            return JSONResponse({"statut": "erreur", "message": "nom, email et numero_twilio requis"}, status_code=400)
+        pizzeria = creer_pizzeria({
+            "nom": nom, "email": email,
+            "telephone_proprietaire": tel,
+            "numero_twilio": numero,
+            "ville": ville,
+            "heure_ouverture": data.get("heure_ouverture", "18h15"),
+            "heure_fermeture": data.get("heure_fermeture", "22h00"),
+            "jours_fermeture": data.get("jours_fermeture", "dimanche"),
+            "max_pizzas_creneau": data.get("max_pizzas_creneau", 2),
+            "actif": True,
+            "statut_abonnement": "actif"
+        })
+        if not pizzeria:
+            return JSONResponse({"statut": "erreur", "message": "Erreur creation pizzeria"}, status_code=500)
+        # Ajouter menu par defaut si fourni
+        menu = data.get("menu", [])
+        for item in menu:
+            ajouter_pizza_menu(pizzeria["id"], item["nom"], item["prix"], item.get("temps_prep", 13))
+        return JSONResponse({"statut": "ok", "pizzeria": pizzeria, "message": nom + " ajoutee avec succes !"})
+    except Exception as e:
+        return JSONResponse({"statut": "erreur", "message": str(e)}, status_code=500)
+
+@app.get("/pizzeria/{pizzeria_id}")
+async def voir_pizzeria(pizzeria_id: int):
+    try:
+        from pizzeria_config import get_pizzeria_by_id, get_menu, get_commandes_du_jour_v2
+        pizzeria = get_pizzeria_by_id(pizzeria_id)
+        if not pizzeria:
+            return JSONResponse({"statut": "erreur", "message": "Pizzeria introuvable"}, status_code=404)
+        menu      = get_menu(pizzeria_id)
+        commandes = get_commandes_du_jour_v2(pizzeria_id)
+        actives   = [c for c in commandes if not c.get("annulee")]
+        return JSONResponse({
+            "pizzeria": pizzeria,
+            "menu": menu,
+            "commandes_aujourd_hui": actives,
+            "nb_commandes": len(actives)
+        })
+    except Exception as e:
+        return JSONResponse({"statut": "erreur", "message": str(e)}, status_code=500)
+
+@app.patch("/pizzeria/{pizzeria_id}")
+async def modifier_pizzeria_route(pizzeria_id: int, request: Request):
+    try:
+        from pizzeria_config import modifier_pizzeria
+        data = await request.json()
+        ok = modifier_pizzeria(pizzeria_id, data)
+        return JSONResponse({"statut": "ok" if ok else "erreur"})
+    except Exception as e:
+        return JSONResponse({"statut": "erreur", "message": str(e)}, status_code=500)
+
+@app.post("/pizzeria/{pizzeria_id}/activer")
+async def activer_pizzeria_route(pizzeria_id: int):
+    try:
+        from pizzeria_config import activer_pizzeria
+        ok = activer_pizzeria(pizzeria_id)
+        return JSONResponse({"statut": "ok" if ok else "erreur", "message": "Pizzeria activee"})
+    except Exception as e:
+        return JSONResponse({"statut": "erreur", "message": str(e)}, status_code=500)
+
+@app.post("/pizzeria/{pizzeria_id}/desactiver")
+async def desactiver_pizzeria_route(pizzeria_id: int):
+    try:
+        from pizzeria_config import desactiver_pizzeria
+        ok = desactiver_pizzeria(pizzeria_id)
+        return JSONResponse({"statut": "ok" if ok else "erreur", "message": "Pizzeria desactivee"})
+    except Exception as e:
+        return JSONResponse({"statut": "erreur", "message": str(e)}, status_code=500)
+
+@app.post("/pizzeria/{pizzeria_id}/menu")
+async def ajouter_pizza_route(pizzeria_id: int, request: Request):
+    try:
+        from pizzeria_config import ajouter_pizza_menu, vider_cache_menu
+        data = await request.json()
+        nom       = data.get("nom", "")
+        prix      = float(data.get("prix", 12.0))
+        temps     = int(data.get("temps_prep", 13))
+        if not nom:
+            return JSONResponse({"statut": "erreur", "message": "Nom requis"}, status_code=400)
+        pizza = ajouter_pizza_menu(pizzeria_id, nom, prix, temps)
+        vider_cache_menu(pizzeria_id)
+        return JSONResponse({"statut": "ok", "pizza": pizza})
+    except Exception as e:
+        return JSONResponse({"statut": "erreur", "message": str(e)}, status_code=500)
+
+@app.patch("/pizzeria/{pizzeria_id}/menu/{nom_pizza}")
+async def modifier_dispo_pizza(pizzeria_id: int, nom_pizza: str, request: Request):
+    try:
+        from pizzeria_config import marquer_pizza_indisponible, vider_cache_menu
+        data      = await request.json()
+        disponible = data.get("disponible", True)
+        ok = marquer_pizza_indisponible(pizzeria_id, nom_pizza, disponible)
+        vider_cache_menu(pizzeria_id)
+        return JSONResponse({"statut": "ok" if ok else "erreur"})
     except Exception as e:
         return JSONResponse({"statut": "erreur", "message": str(e)}, status_code=500)
