@@ -7,3 +7,4 @@ python-multipart==0.0.9
 requests==2.32.3
 supabase==2.7.4
 stripe==8.9.0
+psycopg2-binary==2.9.9
