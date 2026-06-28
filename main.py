@@ -74,25 +74,22 @@ commandes_du_jour = []
 config_four       = {"fours_actifs": 1}
 indisponibles     = {}
 
-def init_depuis_supabase():
-    """Charge les donnees du jour depuis Supabase au demarrage."""
+def init_depuis_db():
+    """Charge les donnees du jour depuis PostgreSQL au demarrage."""
     global commandes_du_jour, config_four, indisponibles
-    if not supabase_ok():
-        print("Supabase non configure - mode memoire uniquement")
-        return
     try:
         commandes_db = charger_commandes_du_jour()
         if commandes_db:
             commandes_du_jour = commandes_db
-            print("Commandes rechargees depuis Supabase : " + str(len(commandes_db)))
+            print("Commandes rechargees depuis DB : " + str(len(commandes_db)))
         config_four["fours_actifs"] = get_fours_actifs()
         indisponibles = get_indisponibles()
-        print("Config rechargee depuis Supabase")
+        print("Config rechargee depuis DB")
     except Exception as e:
-        print("Erreur init Supabase : " + str(e))
+        print("Erreur init DB (normal au 1er demarrage) : " + str(e))
 
 # Charger au demarrage
-init_depuis_supabase()
+init_depuis_db()
 
 # ──────────────────────────────────────────────
 # CAPACITE ET REGLES PLANNING
