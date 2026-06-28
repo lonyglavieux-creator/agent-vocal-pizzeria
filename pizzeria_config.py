@@ -1,104 +1,168 @@
 import os
 import json
-import httpx
 from datetime import datetime
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
-# Cache des configs pizzerias (evite trop de requetes Supabase)
-_cache_pizzerias = {}
-_cache_menus = {}
+def get_conn():
+    import psycopg2
+    return psycopg2.connect(DATABASE_URL)
 
-def get_headers():
-    return {
-        "apikey": SUPABASE_KEY,
-        "Authorization": "Bearer " + SUPABASE_KEY,
-        "Content-Type": "application/json"
-    }
+def row_to_dict(cur, row):
+    cols = [desc[0] for desc in cur.description]
+    d = dict(zip(cols, row))
+    for k, v in d.items():
+        if hasattr(v, 'isoformat'):
+            d[k] = str(v)
+    return d
 
 # ──────────────────────────────────────────────
-# RECUPERER UNE PIZZERIA PAR SON NUMERO TWILIO
+# PIZZERIAS
 # ──────────────────────────────────────────────
 
-def get_pizzeria_by_numero(numero_twilio: str) -> dict | None:
-    numero = numero_twilio.strip()
-    if numero in _cache_pizzerias:
-        return _cache_pizzerias[numero]
+def get_pizzeria_by_numero(numero_twilio: str):
     try:
-        r = httpx.get(
-            SUPABASE_URL + "/rest/v1/pizzerias?numero_twilio=eq." + numero + "&actif=eq.true",
-            headers=get_headers(),
-            timeout=5
-        )
-        if r.status_code == 200:
-            data = r.json()
-            if data:
-                _cache_pizzerias[numero] = data[0]
-                return data[0]
-        return None
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM pizzerias WHERE numero_twilio = %s AND actif = true", (numero_twilio.strip(),))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        return row_to_dict(cur, row) if row else None
     except Exception as e:
         print("Erreur get_pizzeria_by_numero : " + str(e))
         return None
 
-def get_pizzeria_by_id(pizzeria_id: int) -> dict | None:
+def get_pizzeria_by_id(pizzeria_id: int):
     try:
-        r = httpx.get(
-            SUPABASE_URL + "/rest/v1/pizzerias?id=eq." + str(pizzeria_id),
-            headers=get_headers(),
-            timeout=5
-        )
-        if r.status_code == 200:
-            data = r.json()
-            return data[0] if data else None
-        return None
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM pizzerias WHERE id = %s", (pizzeria_id,))
+        row = cur.fetchone()
+        result = row_to_dict(cur, row) if row else None
+        cur.close()
+        conn.close()
+        return result
     except Exception as e:
         print("Erreur get_pizzeria_by_id : " + str(e))
         return None
 
 def get_toutes_pizzerias() -> list:
     try:
-        r = httpx.get(
-            SUPABASE_URL + "/rest/v1/pizzerias?order=nom.asc",
-            headers=get_headers(),
-            timeout=5
-        )
-        return r.json() if r.status_code == 200 else []
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM pizzerias ORDER BY nom ASC")
+        rows = cur.fetchall()
+        result = [row_to_dict(cur, r) for r in rows]
+        cur.close()
+        conn.close()
+        return result
     except Exception as e:
         print("Erreur get_toutes_pizzerias : " + str(e))
         return []
 
+def creer_pizzeria(data: dict):
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO pizzerias (nom, email, telephone_proprietaire, numero_twilio, ville,
+                heure_ouverture, heure_fermeture, jours_fermeture, max_pizzas_creneau, actif, statut_abonnement)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            RETURNING *
+        """, (
+            data.get("nom"), data.get("email"), data.get("telephone_proprietaire"),
+            data.get("numero_twilio"), data.get("ville", ""),
+            data.get("heure_ouverture", "18h15"), data.get("heure_fermeture", "22h00"),
+            data.get("jours_fermeture", "dimanche"), data.get("max_pizzas_creneau", 2),
+            data.get("actif", True), data.get("statut_abonnement", "actif")
+        ))
+        row = cur.fetchone()
+        result = row_to_dict(cur, row)
+        conn.commit()
+        cur.close()
+        conn.close()
+        return result
+    except Exception as e:
+        print("Erreur creer_pizzeria : " + str(e))
+        return None
+
+def modifier_pizzeria(pizzeria_id: int, data: dict) -> bool:
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        sets = ", ".join([k + " = %s" for k in data.keys()])
+        vals = list(data.values()) + [datetime.now(), pizzeria_id]
+        cur.execute("UPDATE pizzerias SET " + sets + ", updated_at = %s WHERE id = %s", vals)
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        print("Erreur modifier_pizzeria : " + str(e))
+        return False
+
+def activer_pizzeria(pizzeria_id: int) -> bool:
+    return modifier_pizzeria(pizzeria_id, {"actif": True, "statut_abonnement": "actif"})
+
+def desactiver_pizzeria(pizzeria_id: int) -> bool:
+    return modifier_pizzeria(pizzeria_id, {"actif": False, "statut_abonnement": "expire"})
+
 # ──────────────────────────────────────────────
-# MENU D UNE PIZZERIA
+# MENU
 # ──────────────────────────────────────────────
 
 def get_menu(pizzeria_id: int) -> list:
-    cache_key = str(pizzeria_id)
-    if cache_key in _cache_menus:
-        return _cache_menus[cache_key]
     try:
-        r = httpx.get(
-            SUPABASE_URL + "/rest/v1/menus?pizzeria_id=eq." + str(pizzeria_id) + "&disponible=eq.true&order=nom.asc",
-            headers=get_headers(),
-            timeout=5
-        )
-        if r.status_code == 200:
-            menu = r.json()
-            _cache_menus[cache_key] = menu
-            return menu
-        return []
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM menus WHERE pizzeria_id = %s AND disponible = true ORDER BY nom ASC", (pizzeria_id,))
+        rows = cur.fetchall()
+        result = [row_to_dict(cur, r) for r in rows]
+        cur.close()
+        conn.close()
+        return result
     except Exception as e:
         print("Erreur get_menu : " + str(e))
         return []
 
-def vider_cache_menu(pizzeria_id: int):
-    cache_key = str(pizzeria_id)
-    if cache_key in _cache_menus:
-        del _cache_menus[cache_key]
+def ajouter_pizza_menu(pizzeria_id: int, nom: str, prix: float, temps_prep: int = 13):
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO menus (pizzeria_id, nom, prix, temps_prep)
+            VALUES (%s, %s, %s, %s) RETURNING *
+        """, (pizzeria_id, nom, prix, temps_prep))
+        row = cur.fetchone()
+        result = row_to_dict(cur, row)
+        conn.commit()
+        cur.close()
+        conn.close()
+        return result
+    except Exception as e:
+        print("Erreur ajouter_pizza_menu : " + str(e))
+        return None
 
-def vider_cache_pizzeria(numero_twilio: str):
-    if numero_twilio in _cache_pizzerias:
-        del _cache_pizzerias[numero_twilio]
+def marquer_pizza_indisponible(pizzeria_id: int, nom_pizza: str, disponible: bool) -> bool:
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("UPDATE menus SET disponible = %s WHERE pizzeria_id = %s AND nom = %s",
+                    (disponible, pizzeria_id, nom_pizza))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except Exception as e:
+        print("Erreur marquer_pizza_indisponible : " + str(e))
+        return False
+
+def vider_cache_menu(pizzeria_id: int):
+    pass
+
+def vider_cache_pizzeria(numero: str):
+    pass
 
 def get_prix_pizza(menu: list, nom_pizza: str) -> float:
     nom_lower = nom_pizza.lower()
@@ -122,131 +186,63 @@ def pizza_disponible_menu(menu: list, nom_pizza: str) -> bool:
     return True
 
 # ──────────────────────────────────────────────
-# CREER / MODIFIER UNE PIZZERIA
+# COMMANDES V2
 # ──────────────────────────────────────────────
 
-def creer_pizzeria(data: dict) -> dict | None:
+def sauvegarder_commande_v2(pizzeria_id: int, commande: dict):
     try:
-        r = httpx.post(
-            SUPABASE_URL + "/rest/v1/pizzerias",
-            headers={**get_headers(), "Prefer": "return=representation"},
-            json=data,
-            timeout=10
-        )
-        if r.status_code in [200, 201]:
-            return r.json()[0]
-        print("Erreur creer_pizzeria : " + r.text)
-        return None
-    except Exception as e:
-        print("Erreur creer_pizzeria : " + str(e))
-        return None
-
-def modifier_pizzeria(pizzeria_id: int, data: dict) -> bool:
-    vider_cache_pizzeria("")
-    try:
-        r = httpx.patch(
-            SUPABASE_URL + "/rest/v1/pizzerias?id=eq." + str(pizzeria_id),
-            headers={**get_headers(), "Prefer": "return=representation"},
-            json={**data, "updated_at": datetime.now().isoformat()},
-            timeout=10
-        )
-        return r.status_code in [200, 204]
-    except Exception as e:
-        print("Erreur modifier_pizzeria : " + str(e))
-        return False
-
-def activer_pizzeria(pizzeria_id: int) -> bool:
-    return modifier_pizzeria(pizzeria_id, {"actif": True, "statut_abonnement": "actif"})
-
-def desactiver_pizzeria(pizzeria_id: int) -> bool:
-    return modifier_pizzeria(pizzeria_id, {"actif": False, "statut_abonnement": "expire"})
-
-def ajouter_pizza_menu(pizzeria_id: int, nom: str, prix: float, temps_prep: int = 13) -> dict | None:
-    vider_cache_menu(pizzeria_id)
-    try:
-        r = httpx.post(
-            SUPABASE_URL + "/rest/v1/menus",
-            headers={**get_headers(), "Prefer": "return=representation"},
-            json={"pizzeria_id": pizzeria_id, "nom": nom, "prix": prix, "temps_prep": temps_prep},
-            timeout=10
-        )
-        if r.status_code in [200, 201]:
-            return r.json()[0]
-        return None
-    except Exception as e:
-        print("Erreur ajouter_pizza_menu : " + str(e))
-        return None
-
-def marquer_pizza_indisponible(pizzeria_id: int, nom_pizza: str, disponible: bool) -> bool:
-    vider_cache_menu(pizzeria_id)
-    try:
-        r = httpx.patch(
-            SUPABASE_URL + "/rest/v1/menus?pizzeria_id=eq." + str(pizzeria_id) + "&nom=eq." + nom_pizza,
-            headers=get_headers(),
-            json={"disponible": disponible},
-            timeout=10
-        )
-        return r.status_code in [200, 204]
-    except Exception as e:
-        print("Erreur marquer_pizza_indisponible : " + str(e))
-        return False
-
-# ──────────────────────────────────────────────
-# COMMANDES PAR PIZZERIA
-# ──────────────────────────────────────────────
-
-def sauvegarder_commande_v2(pizzeria_id: int, commande: dict) -> dict | None:
-    try:
-        payload = {
-            "pizzeria_id": pizzeria_id,
-            "prenom": commande.get("prenom", "?"),
-            "telephone": commande.get("telephone", ""),
-            "pizza": commande.get("pizza", "?"),
-            "nb": commande.get("nb", 1),
-            "heure": commande.get("heure", ""),
-            "lancement": commande.get("lancement", ""),
-            "extras": commande.get("extras", ""),
-            "total": commande.get("total", 0),
-            "source": commande.get("source", "vocal")
-        }
-        r = httpx.post(
-            SUPABASE_URL + "/rest/v1/commandes_v2",
-            headers={**get_headers(), "Prefer": "return=representation"},
-            json=payload,
-            timeout=10
-        )
-        if r.status_code in [200, 201]:
-            return r.json()[0]
-        return None
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO commandes_v2 (pizzeria_id, prenom, telephone, pizza, nb, heure, lancement, extras, total, source)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+        """, (
+            pizzeria_id,
+            commande.get("prenom", "?"), commande.get("telephone", ""),
+            commande.get("pizza", "?"), commande.get("nb", 1),
+            commande.get("heure", ""), commande.get("lancement", ""),
+            commande.get("extras", ""), commande.get("total", 0),
+            commande.get("source", "vocal")
+        ))
+        commande_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
+        result = dict(commande)
+        result["id"] = commande_id
+        return result
     except Exception as e:
         print("Erreur sauvegarder_commande_v2 : " + str(e))
         return None
 
 def get_commandes_du_jour_v2(pizzeria_id: int) -> list:
     try:
+        conn = get_conn()
+        cur = conn.cursor()
         aujourd_hui = datetime.now().strftime("%Y-%m-%d")
-        r = httpx.get(
-            SUPABASE_URL + "/rest/v1/commandes_v2?pizzeria_id=eq." + str(pizzeria_id) +
-            "&created_at=gte." + aujourd_hui + "T00:00:00&order=created_at.asc",
-            headers=get_headers(),
-            timeout=10
-        )
-        return r.json() if r.status_code == 200 else []
+        cur.execute("""
+            SELECT * FROM commandes_v2
+            WHERE pizzeria_id = %s AND created_at >= %s
+            ORDER BY created_at ASC
+        """, (pizzeria_id, aujourd_hui + " 00:00:00"))
+        rows = cur.fetchall()
+        result = [row_to_dict(cur, r) for r in rows]
+        cur.close()
+        conn.close()
+        return result
     except Exception as e:
         print("Erreur get_commandes_du_jour_v2 : " + str(e))
         return []
 
 def generer_prompt_pizzeria(pizzeria: dict, menu: list) -> str:
-    nom           = pizzeria.get("nom", "la pizzeria")
-    heure_ouv     = pizzeria.get("heure_ouverture", "18h15")
-    heure_ferm    = pizzeria.get("heure_fermeture", "22h00")
-    jours_ferm    = pizzeria.get("jours_fermeture", "dimanche")
-    max_pizzas    = pizzeria.get("max_pizzas_creneau", 2)
-
+    nom = pizzeria.get("nom", "la pizzeria")
+    heure_ouv = pizzeria.get("heure_ouverture", "18h15")
+    heure_ferm = pizzeria.get("heure_fermeture", "22h00")
+    jours_ferm = pizzeria.get("jours_fermeture", "dimanche")
+    max_pizzas = pizzeria.get("max_pizzas_creneau", 2)
     carte_txt = ""
     for item in menu:
         carte_txt += item["nom"] + " : " + str(item["prix"]) + "euros | "
-
     return (
         "Tu es Nova, l assistante vocale de " + nom + ". "
         "Tu reponds UNIQUEMENT en francais, ton chaleureux et naturel. Maximum 2 phrases courtes.\n\n"
