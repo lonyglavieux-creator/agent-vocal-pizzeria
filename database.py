@@ -1,51 +1,50 @@
 import os
 import json
-import httpx
 from datetime import datetime
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
-def get_headers():
-    return {
-        "apikey": SUPABASE_KEY,
-        "Authorization": "Bearer " + SUPABASE_KEY,
-        "Content-Type": "application/json",
-        "Prefer": "return=representation"
-    }
+def get_conn():
+    import psycopg2
+    return psycopg2.connect(DATABASE_URL)
 
 def supabase_ok() -> bool:
-    return bool(SUPABASE_URL and SUPABASE_KEY)
+    return bool(DATABASE_URL)
+
+# ──────────────────────────────────────────────
+# COMMANDES
+# ──────────────────────────────────────────────
 
 def sauvegarder_commande(commande: dict):
     if not supabase_ok():
         return None
     try:
-        payload = {
-            "prenom": commande.get("prenom", "?"),
-            "telephone": commande.get("telephone", ""),
-            "pizza": commande.get("pizza", "?"),
-            "nb": commande.get("nb", 1),
-            "heure": commande.get("heure", ""),
-            "lancement": commande.get("lancement", ""),
-            "extras": commande.get("extras", ""),
-            "total": commande.get("total", 0),
-            "annulee": False,
-            "source": commande.get("source", "vocal")
-        }
-        r = httpx.post(
-            SUPABASE_URL + "/rest/v1/commandes",
-            headers=get_headers(),
-            json=payload,
-            timeout=10
-        )
-        if r.status_code in [200, 201]:
-            data = r.json()
-            print("Supabase OK - commande ID : " + str(data[0].get("id")))
-            return data[0]
-        else:
-            print("Erreur Supabase : " + str(r.status_code))
-            return None
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO commandes (prenom, telephone, pizza, nb, heure, lancement, extras, total, annulee, source)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+        """, (
+            commande.get("prenom", "?"),
+            commande.get("telephone", ""),
+            commande.get("pizza", "?"),
+            commande.get("nb", 1),
+            commande.get("heure", ""),
+            commande.get("lancement", ""),
+            commande.get("extras", ""),
+            commande.get("total", 0),
+            False,
+            commande.get("source", "vocal")
+        ))
+        commande_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("Commande sauvegardee DB ID : " + str(commande_id))
+        result = dict(commande)
+        result["id"] = commande_id
+        return result
     except Exception as e:
         print("Erreur sauvegarder_commande : " + str(e))
         return None
@@ -54,18 +53,16 @@ def annuler_commande_db(commande_id: int, raison: str) -> bool:
     if not supabase_ok():
         return False
     try:
-        payload = {
-            "annulee": True,
-            "annulee_at": datetime.now().isoformat(),
-            "raison_annulation": raison
-        }
-        r = httpx.patch(
-            SUPABASE_URL + "/rest/v1/commandes?id=eq." + str(commande_id),
-            headers=get_headers(),
-            json=payload,
-            timeout=10
-        )
-        return r.status_code in [200, 204]
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE commandes SET annulee = true, annulee_at = %s, raison_annulation = %s
+            WHERE id = %s
+        """, (datetime.now(), raison, commande_id))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
     except Exception as e:
         print("Erreur annuler_commande_db : " + str(e))
         return False
@@ -74,32 +71,68 @@ def charger_commandes_du_jour() -> list:
     if not supabase_ok():
         return []
     try:
+        conn = get_conn()
+        cur = conn.cursor()
         aujourd_hui = datetime.now().strftime("%Y-%m-%d")
-        r = httpx.get(
-            SUPABASE_URL + "/rest/v1/commandes?created_at=gte." + aujourd_hui + "T00:00:00&order=created_at.asc",
-            headers=get_headers(),
-            timeout=10
-        )
-        if r.status_code == 200:
-            return r.json()
-        return []
+        cur.execute("""
+            SELECT id, prenom, telephone, pizza, nb, heure, lancement, extras, total,
+                   annulee, annulee_at, raison_annulation, source, created_at
+            FROM commandes
+            WHERE created_at >= %s
+            ORDER BY created_at ASC
+        """, (aujourd_hui + " 00:00:00",))
+        rows = cur.fetchall()
+        cols = ["id","prenom","telephone","pizza","nb","heure","lancement","extras","total",
+                "annulee","annulee_at","raison_annulation","source","created_at"]
+        result = []
+        for row in rows:
+            d = dict(zip(cols, row))
+            if d.get("created_at"):
+                d["created_at"] = str(d["created_at"])
+            if d.get("annulee_at"):
+                d["annulee_at"] = str(d["annulee_at"])
+            result.append(d)
+        cur.close()
+        conn.close()
+        print("Commandes chargees depuis DB : " + str(len(result)))
+        return result
     except Exception as e:
         print("Erreur charger_commandes_du_jour : " + str(e))
         return []
+
+def get_commande_by_id(commande_id: int):
+    if not supabase_ok():
+        return None
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM commandes WHERE id = %s", (commande_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = [desc[0] for desc in cur.description]
+        cur.close()
+        conn.close()
+        return dict(zip(cols, row))
+    except Exception as e:
+        print("Erreur get_commande_by_id : " + str(e))
+        return None
+
+# ──────────────────────────────────────────────
+# CONFIG
+# ──────────────────────────────────────────────
 
 def get_config(cle: str, defaut: str = "") -> str:
     if not supabase_ok():
         return defaut
     try:
-        r = httpx.get(
-            SUPABASE_URL + "/rest/v1/config?cle=eq." + cle,
-            headers=get_headers(),
-            timeout=10
-        )
-        if r.status_code == 200:
-            data = r.json()
-            return data[0]["valeur"] if data else defaut
-        return defaut
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT valeur FROM config WHERE cle = %s", (cle,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        return row[0] if row else defaut
     except Exception as e:
         print("Erreur get_config : " + str(e))
         return defaut
@@ -108,21 +141,16 @@ def set_config(cle: str, valeur: str) -> bool:
     if not supabase_ok():
         return False
     try:
-        r = httpx.patch(
-            SUPABASE_URL + "/rest/v1/config?cle=eq." + cle,
-            headers=get_headers(),
-            json={"valeur": valeur},
-            timeout=10
-        )
-        if r.status_code in [200, 204]:
-            return True
-        r2 = httpx.post(
-            SUPABASE_URL + "/rest/v1/config",
-            headers=get_headers(),
-            json={"cle": cle, "valeur": valeur},
-            timeout=10
-        )
-        return r2.status_code in [200, 201]
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO config (cle, valeur) VALUES (%s, %s)
+            ON CONFLICT (cle) DO UPDATE SET valeur = EXCLUDED.valeur
+        """, (cle, valeur))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
     except Exception as e:
         print("Erreur set_config : " + str(e))
         return False
@@ -146,31 +174,4 @@ def set_indisponibles(indispo: dict) -> bool:
     return set_config("indisponibles", json.dumps(indispo))
 
 def log_appel(call_sid: str, prenom: str = "", duree_min: float = 0, commande_id: int = None):
-    if not supabase_ok():
-        return
-    try:
-        httpx.post(
-            SUPABASE_URL + "/rest/v1/logs_appels",
-            headers=get_headers(),
-            json={"call_sid": call_sid, "prenom": prenom, "duree_min": duree_min, "commande_id": commande_id},
-            timeout=5
-        )
-    except Exception as e:
-        print("Erreur log_appel : " + str(e))
-
-def get_commande_by_id(commande_id: int):
-    if not supabase_ok():
-        return None
-    try:
-        r = httpx.get(
-            SUPABASE_URL + "/rest/v1/commandes?id=eq." + str(commande_id),
-            headers=get_headers(),
-            timeout=10
-        )
-        if r.status_code == 200:
-            data = r.json()
-            return data[0] if data else None
-        return None
-    except Exception as e:
-        print("Erreur get_commande_by_id : " + str(e))
-        return None
+    pass
