@@ -2,109 +2,110 @@ import os
 import json
 import asyncpg
 import asyncio
+import concurrent.futures
 from datetime import datetime
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "").replace("postgresql://", "postgres://")
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+
+def run_async(coro):
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop and loop.is_running():
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(asyncio.run, coro)
+            return future.result(timeout=10)
+    else:
+        return asyncio.run(coro)
 
 def fix_dates(d: dict) -> dict:
-    for k, v in d.items():
-        if hasattr(v, 'isoformat'):
-            d[k] = str(v)
-    return d
-
-async def _get_conn():
-    return await asyncpg.connect(DATABASE_URL)
-
-# ──────────────────────────────────────────────
-# PIZZERIAS
-# ──────────────────────────────────────────────
+    return {k: str(v) if hasattr(v, 'isoformat') else v for k, v in d.items()}
 
 def get_pizzeria_by_numero(numero_twilio: str):
+    async def _do():
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            row = await conn.fetchrow(
+                "SELECT * FROM pizzerias WHERE numero_twilio=$1 AND actif=true",
+                numero_twilio.strip()
+            )
+            return fix_dates(dict(row)) if row else None
+        finally:
+            await conn.close()
     try:
-        async def _do():
-            conn = await _get_conn()
-            try:
-                row = await conn.fetchrow(
-                    "SELECT * FROM pizzerias WHERE numero_twilio=$1 AND actif=true",
-                    numero_twilio.strip()
-                )
-                return fix_dates(dict(row)) if row else None
-            finally:
-                await conn.close()
-        return asyncio.run(_do())
+        return run_async(_do())
     except Exception as e:
         print("Erreur get_pizzeria_by_numero : " + str(e))
         return None
 
 def get_pizzeria_by_id(pizzeria_id: int):
+    async def _do():
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            row = await conn.fetchrow("SELECT * FROM pizzerias WHERE id=$1", pizzeria_id)
+            return fix_dates(dict(row)) if row else None
+        finally:
+            await conn.close()
     try:
-        async def _do():
-            conn = await _get_conn()
-            try:
-                row = await conn.fetchrow("SELECT * FROM pizzerias WHERE id=$1", pizzeria_id)
-                return fix_dates(dict(row)) if row else None
-            finally:
-                await conn.close()
-        return asyncio.run(_do())
+        return run_async(_do())
     except Exception as e:
         print("Erreur get_pizzeria_by_id : " + str(e))
         return None
 
 def get_toutes_pizzerias() -> list:
+    async def _do():
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            rows = await conn.fetch("SELECT * FROM pizzerias ORDER BY nom ASC")
+            return [fix_dates(dict(r)) for r in rows]
+        finally:
+            await conn.close()
     try:
-        async def _do():
-            conn = await _get_conn()
-            try:
-                rows = await conn.fetch("SELECT * FROM pizzerias ORDER BY nom ASC")
-                return [fix_dates(dict(r)) for r in rows]
-            finally:
-                await conn.close()
-        return asyncio.run(_do())
+        return run_async(_do())
     except Exception as e:
         print("Erreur get_toutes_pizzerias : " + str(e))
         return []
 
 def creer_pizzeria(data: dict):
+    async def _do():
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            row = await conn.fetchrow("""
+                INSERT INTO pizzerias (nom, email, telephone_proprietaire, numero_twilio, ville,
+                    heure_ouverture, heure_fermeture, jours_fermeture, max_pizzas_creneau, actif, statut_abonnement)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *
+            """,
+                data.get("nom"), data.get("email"), data.get("telephone_proprietaire"),
+                data.get("numero_twilio"), data.get("ville",""),
+                data.get("heure_ouverture","18h15"), data.get("heure_fermeture","22h00"),
+                data.get("jours_fermeture","dimanche"), int(data.get("max_pizzas_creneau",2)),
+                bool(data.get("actif",True)), data.get("statut_abonnement","actif")
+            )
+            return fix_dates(dict(row)) if row else None
+        finally:
+            await conn.close()
     try:
-        async def _do():
-            conn = await _get_conn()
-            try:
-                row = await conn.fetchrow("""
-                    INSERT INTO pizzerias (nom, email, telephone_proprietaire, numero_twilio, ville,
-                        heure_ouverture, heure_fermeture, jours_fermeture, max_pizzas_creneau, actif, statut_abonnement)
-                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *
-                """,
-                    data.get("nom"), data.get("email"), data.get("telephone_proprietaire"),
-                    data.get("numero_twilio"), data.get("ville",""),
-                    data.get("heure_ouverture","18h15"), data.get("heure_fermeture","22h00"),
-                    data.get("jours_fermeture","dimanche"), data.get("max_pizzas_creneau",2),
-                    data.get("actif",True), data.get("statut_abonnement","actif")
-                )
-                return fix_dates(dict(row)) if row else None
-            finally:
-                await conn.close()
-        return asyncio.run(_do())
+        return run_async(_do())
     except Exception as e:
         print("Erreur creer_pizzeria : " + str(e))
         return None
 
 def modifier_pizzeria(pizzeria_id: int, data: dict) -> bool:
+    async def _do():
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            keys = list(data.keys())
+            vals = list(data.values())
+            sets = ", ".join([k + "=$" + str(i+1) for i, k in enumerate(keys)])
+            vals.append(datetime.now())
+            vals.append(pizzeria_id)
+            sql = "UPDATE pizzerias SET " + sets + ", updated_at=$" + str(len(keys)+1) + " WHERE id=$" + str(len(keys)+2)
+            await conn.execute(sql, *vals)
+        finally:
+            await conn.close()
     try:
-        async def _do():
-            conn = await _get_conn()
-            try:
-                keys = list(data.keys())
-                vals = list(data.values())
-                sets = ", ".join([k + "=$" + str(i+1) for i, k in enumerate(keys)])
-                vals.append(datetime.now())
-                vals.append(pizzeria_id)
-                await conn.execute(
-                    "UPDATE pizzerias SET " + sets + ", updated_at=$" + str(len(keys)+1) + " WHERE id=$" + str(len(keys)+2),
-                    *vals
-                )
-            finally:
-                await conn.close()
-        asyncio.run(_do())
+        run_async(_do())
         return True
     except Exception as e:
         print("Erreur modifier_pizzeria : " + str(e))
@@ -116,56 +117,52 @@ def activer_pizzeria(pizzeria_id: int) -> bool:
 def desactiver_pizzeria(pizzeria_id: int) -> bool:
     return modifier_pizzeria(pizzeria_id, {"actif": False, "statut_abonnement": "expire"})
 
-# ──────────────────────────────────────────────
-# MENU
-# ──────────────────────────────────────────────
-
 def get_menu(pizzeria_id: int) -> list:
+    async def _do():
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            rows = await conn.fetch(
+                "SELECT * FROM menus WHERE pizzeria_id=$1 AND disponible=true ORDER BY nom ASC",
+                pizzeria_id
+            )
+            return [fix_dates(dict(r)) for r in rows]
+        finally:
+            await conn.close()
     try:
-        async def _do():
-            conn = await _get_conn()
-            try:
-                rows = await conn.fetch(
-                    "SELECT * FROM menus WHERE pizzeria_id=$1 AND disponible=true ORDER BY nom ASC",
-                    pizzeria_id
-                )
-                return [fix_dates(dict(r)) for r in rows]
-            finally:
-                await conn.close()
-        return asyncio.run(_do())
+        return run_async(_do())
     except Exception as e:
         print("Erreur get_menu : " + str(e))
         return []
 
 def ajouter_pizza_menu(pizzeria_id: int, nom: str, prix: float, temps_prep: int = 13):
+    async def _do():
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            row = await conn.fetchrow("""
+                INSERT INTO menus (pizzeria_id, nom, prix, temps_prep)
+                VALUES ($1,$2,$3,$4) RETURNING *
+            """, pizzeria_id, nom, float(prix), int(temps_prep))
+            return fix_dates(dict(row)) if row else None
+        finally:
+            await conn.close()
     try:
-        async def _do():
-            conn = await _get_conn()
-            try:
-                row = await conn.fetchrow("""
-                    INSERT INTO menus (pizzeria_id, nom, prix, temps_prep)
-                    VALUES ($1,$2,$3,$4) RETURNING *
-                """, pizzeria_id, nom, prix, temps_prep)
-                return fix_dates(dict(row)) if row else None
-            finally:
-                await conn.close()
-        return asyncio.run(_do())
+        return run_async(_do())
     except Exception as e:
         print("Erreur ajouter_pizza_menu : " + str(e))
         return None
 
 def marquer_pizza_indisponible(pizzeria_id: int, nom_pizza: str, disponible: bool) -> bool:
+    async def _do():
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            await conn.execute(
+                "UPDATE menus SET disponible=$1 WHERE pizzeria_id=$2 AND nom=$3",
+                disponible, pizzeria_id, nom_pizza
+            )
+        finally:
+            await conn.close()
     try:
-        async def _do():
-            conn = await _get_conn()
-            try:
-                await conn.execute(
-                    "UPDATE menus SET disponible=$1 WHERE pizzeria_id=$2 AND nom=$3",
-                    disponible, pizzeria_id, nom_pizza
-                )
-            finally:
-                await conn.close()
-        asyncio.run(_do())
+        run_async(_do())
         return True
     except Exception as e:
         print("Erreur marquer_pizza_indisponible : " + str(e))
@@ -198,30 +195,26 @@ def pizza_disponible_menu(menu: list, nom_pizza: str) -> bool:
             return item.get("disponible", True)
     return True
 
-# ──────────────────────────────────────────────
-# COMMANDES V2
-# ──────────────────────────────────────────────
-
 def sauvegarder_commande_v2(pizzeria_id: int, commande: dict):
+    async def _do():
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            row = await conn.fetchrow("""
+                INSERT INTO commandes_v2 (pizzeria_id, prenom, telephone, pizza, nb, heure, lancement, extras, total, source)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id
+            """,
+                pizzeria_id,
+                commande.get("prenom","?"), commande.get("telephone",""),
+                commande.get("pizza","?"), int(commande.get("nb",1)),
+                commande.get("heure",""), commande.get("lancement",""),
+                commande.get("extras",""), float(commande.get("total",0)),
+                commande.get("source","vocal")
+            )
+            return row["id"] if row else None
+        finally:
+            await conn.close()
     try:
-        async def _do():
-            conn = await _get_conn()
-            try:
-                row = await conn.fetchrow("""
-                    INSERT INTO commandes_v2 (pizzeria_id, prenom, telephone, pizza, nb, heure, lancement, extras, total, source)
-                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id
-                """,
-                    pizzeria_id,
-                    commande.get("prenom","?"), commande.get("telephone",""),
-                    commande.get("pizza","?"), commande.get("nb",1),
-                    commande.get("heure",""), commande.get("lancement",""),
-                    commande.get("extras",""), float(commande.get("total",0)),
-                    commande.get("source","vocal")
-                )
-                return row["id"] if row else None
-            finally:
-                await conn.close()
-        cid = asyncio.run(_do())
+        cid = run_async(_do())
         result = dict(commande)
         result["id"] = cid
         return result
@@ -230,20 +223,20 @@ def sauvegarder_commande_v2(pizzeria_id: int, commande: dict):
         return None
 
 def get_commandes_du_jour_v2(pizzeria_id: int) -> list:
+    async def _do():
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            today = datetime.now().strftime("%Y-%m-%d")
+            rows = await conn.fetch("""
+                SELECT * FROM commandes_v2
+                WHERE pizzeria_id=$1 AND created_at >= $2
+                ORDER BY created_at ASC
+            """, pizzeria_id, today + " 00:00:00")
+            return [fix_dates(dict(r)) for r in rows]
+        finally:
+            await conn.close()
     try:
-        async def _do():
-            conn = await _get_conn()
-            try:
-                today = datetime.now().strftime("%Y-%m-%d")
-                rows = await conn.fetch("""
-                    SELECT * FROM commandes_v2
-                    WHERE pizzeria_id=$1 AND created_at >= $2
-                    ORDER BY created_at ASC
-                """, pizzeria_id, today + " 00:00:00")
-                return [fix_dates(dict(r)) for r in rows]
-            finally:
-                await conn.close()
-        return asyncio.run(_do())
+        return run_async(_do())
     except Exception as e:
         print("Erreur get_commandes_du_jour_v2 : " + str(e))
         return []
