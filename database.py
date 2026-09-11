@@ -83,10 +83,11 @@ def charger_commandes_du_jour() -> list:
     async def _do():
         conn = await asyncpg.connect(DATABASE_URL)
         try:
-            today = datetime.now().strftime("%Y-%m-%d")
-            rows = await conn.fetch("""
-                SELECT * FROM commandes WHERE created_at >= $1 ORDER BY created_at ASC
-            """, today + " 00:00:00")
+            today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+rows = await conn.fetch(
+    "SELECT * FROM commandes WHERE created_at >= $1 ORDER BY created_at ASC",
+    today
+)
             return [fix_dates(dict(r)) for r in rows]
         finally:
             await conn.close()
