@@ -84,10 +84,9 @@ def charger_commandes_du_jour() -> list:
         conn = await asyncpg.connect(DATABASE_URL)
         try:
             today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-rows = await conn.fetch(
-    "SELECT * FROM commandes WHERE created_at >= $1 ORDER BY created_at ASC",
-    today
-)
+            rows = await conn.fetch("""
+                SELECT * FROM commandes WHERE created_at >= $1 ORDER BY created_at ASC
+            """, today)
             return [fix_dates(dict(r)) for r in rows]
         finally:
             await conn.close()
@@ -172,3 +171,4 @@ def set_indisponibles(indispo: dict) -> bool:
 
 def log_appel(call_sid: str, prenom: str = "", duree_min: float = 0, commande_id: int = None):
     pass
+
