@@ -5,6 +5,7 @@ from twilio.twiml.voice_response import VoiceResponse, Gather
 import os
 import json
 import httpx
+import asyncpg
 from datetime import datetime
 from voice_handler import (
     transcribe_audio, get_nova_response, build_twiml_response,
@@ -1091,5 +1092,60 @@ async def modifier_dispo_pizza(pizzeria_id: int, nom_pizza: str, request: Reques
         ok = marquer_pizza_indisponible(pizzeria_id, nom_pizza, disponible)
         vider_cache_menu(pizzeria_id)
         return JSONResponse({"statut": "ok" if ok else "erreur"})
+    except Exception as e:
+        return JSONResponse({"statut": "erreur", "message": str(e)}, status_code=500)
+
+
+# ──────────────────────────────────────────────
+# ADMIN TEMPORAIRE - SEED DE DONNEES DE TEST
+# ──────────────────────────────────────────────
+
+@app.post("/admin/insert-test-pizzeria")
+async def insert_test_pizzeria():
+    """Route temporaire pour inserer une pizzeria de test dans Postgres."""
+    database_url = os.environ.get("DATABASE_URL", "")
+    if not database_url:
+        return JSONResponse({"statut": "erreur", "message": "DATABASE_URL non configuree"}, status_code=500)
+
+    pizzeria_data = {
+        "nom": "Bella Pizza",
+        "email": "lonyglavieux@gmail.com",
+        "telephone_proprietaire": "+33788705435",
+        "numero_twilio": "+16363558296",
+        "ville": "Saint Drézéry"
+    }
+
+    try:
+        conn = await asyncpg.connect(database_url)
+        try:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO pizzerias (nom, email, telephone_proprietaire, numero_twilio, ville)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING id, nom, email, telephone_proprietaire, numero_twilio, ville
+                """,
+                pizzeria_data["nom"],
+                pizzeria_data["email"],
+                pizzeria_data["telephone_proprietaire"],
+                pizzeria_data["numero_twilio"],
+                pizzeria_data["ville"]
+            )
+        finally:
+            await conn.close()
+
+        if not row:
+            return JSONResponse({"statut": "erreur", "message": "Insertion echouee"}, status_code=500)
+
+        return JSONResponse({
+            "statut": "ok",
+            "pizzeria": {
+                "id": row["id"],
+                "nom": row["nom"],
+                "email": row["email"],
+                "telephone_proprietaire": row["telephone_proprietaire"],
+                "numero_twilio": row["numero_twilio"],
+                "ville": row["ville"]
+            }
+        })
     except Exception as e:
         return JSONResponse({"statut": "erreur", "message": str(e)}, status_code=500)
