@@ -1082,16 +1082,7 @@ async def modifier_dispo_pizza(pizzeria_id: int, nom_pizza: str, request: Reques
         return JSONResponse({"statut": "erreur", "message": str(e)}, status_code=500)
 
 
-# ──────────────────────────────────────────────
-# ADMIN TEMPORAIRE - SEED DE DONNEES DE TEST
-# ──────────────────────────────────────────────
 
-@app.post("/admin/insert-test-pizzeria")
-async def insert_test_pizzeria():
-    """Route temporaire pour inserer une pizzeria de test dans Postgres."""
-    database_url = os.environ.get("DATABASE_URL", "")
-    if not database_url:
-        return JSONResponse({"statut": "erreur", "message": "DATABASE_URL non configuree"}, status_code=500)
 
     pizzeria_data = {
         "nom": "Bella Pizza",
