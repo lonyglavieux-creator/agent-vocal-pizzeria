@@ -226,7 +226,7 @@ def get_commandes_du_jour_v2(pizzeria_id: int) -> list:
     async def _do():
         conn = await asyncpg.connect(DATABASE_URL)
         try:
-            today = datetime.now().strftime("%Y-%m-%d")
+            today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             rows = await conn.fetch("""
                 SELECT * FROM commandes_v2
                 WHERE pizzeria_id=$1 AND created_at >= $2
