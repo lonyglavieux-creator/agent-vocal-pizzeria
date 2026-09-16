@@ -231,7 +231,7 @@ def get_commandes_du_jour_v2(pizzeria_id: int) -> list:
                 SELECT * FROM commandes_v2
                 WHERE pizzeria_id=$1 AND created_at >= $2
                 ORDER BY created_at ASC
-            """, pizzeria_id, today + " 00:00:00")
+          """, pizzeria_id, today)
             return [fix_dates(dict(r)) for r in rows]
         finally:
             await conn.close()
