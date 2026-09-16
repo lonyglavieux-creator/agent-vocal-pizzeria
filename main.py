@@ -1009,12 +1009,12 @@ async def ajouter_pizzeria(request: Request):
 
 @app.get("/pizzeria/{pizzeria_id}")
 async def voir_pizzeria(pizzeria_id: int):
-    try:
-         from pizzeria_config import get_menu, get_commandes_du_jour_v2, get_pizzeria_by_id
+   try:
+        from pizzeria_config import get_menu, get_commandes_du_jour_v2, get_pizzeria_by_id
         pizzeria = get_pizzeria_by_id(pizzeria_id)
         if not pizzeria:
             return JSONResponse({"statut": "erreur", "message": "Pizzeria introuvable"}, status_code=404)
-        menu      = get_menu(pizzeria_id)
+        menu       = get_menu(pizzeria_id)
         commandes = get_commandes_du_jour_v2(pizzeria_id)
         actives   = [c for c in commandes if not c.get("annulee")]
         return JSONResponse({
@@ -1025,7 +1025,6 @@ async def voir_pizzeria(pizzeria_id: int):
         })
     except Exception as e:
         return JSONResponse({"statut": "erreur", "message": str(e)}, status_code=500)
-
 @app.patch("/pizzeria/{pizzeria_id}")
 async def modifier_pizzeria_route(pizzeria_id: int, request: Request):
     try:
