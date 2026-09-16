@@ -1009,7 +1009,7 @@ async def ajouter_pizzeria(request: Request):
 
 @app.get("/pizzeria/{pizzeria_id}")
 async def voir_pizzeria(pizzeria_id: int):
-   try:
+    try:
         from pizzeria_config import get_menu, get_commandes_du_jour_v2, get_pizzeria_by_id
         pizzeria = get_pizzeria_by_id(pizzeria_id)
         if not pizzeria:
