@@ -1007,14 +1007,25 @@ async def ajouter_pizzeria(request: Request):
     except Exception as e:
         return JSONResponse({"statut": "erreur", "message": str(e)}, status_code=500)
 
-python @app.get("/pizzeria/{pizzeria_id}") async def voir_pizzeria(pizzeria_id: int, request: Request): admin_key = os.environ.get("ADMIN_API_KEY", "") if not admin_key or request.headers.get("X-Admin-Key") != admin_key: return JSONResponse({"statut": "erreur", "message": "Non autorise"}, status_code=401) try: from pizzeria_config import get_menu, get_commandes_du_jour_v2, get_pizzeria_by_id pizzeria = get_pizzeria_by_id(pizzeria_id) if not pizzeria: return JSONResponse({"statut": "erreur", "message": "Pizzeria introuvable"}, status_code=404) menu = get_menu(pizzeria_id) commandes = get_commandes_du_jour_v2(pizzeria_id) actives = [c for c in commandes if not c.get("annulee")] return JSONResponse({ "pizzeria": pizzeria, "menu": menu, "commandes_aujourd_hui": actives, "nb_commandes": len(actives) }) except Exception as e: return JSONResponse({"statut": "erreur", "message": str(e)}, status_code=500)
-@app.patch("/pizzeria/{pizzeria_id}")
-async def modifier_pizzeria_route(pizzeria_id: int, request: Request):
+@app.get("/pizzeria/{pizzeria_id}")
+async def voir_pizzeria(pizzeria_id: int, request: Request):
+    admin_key = os.environ.get("ADMIN_API_KEY", "")
+    if not admin_key or request.headers.get("X-Admin-Key") != admin_key:
+        return JSONResponse({"statut": "erreur", "message": "Non autorise"}, status_code=401)
     try:
-        from pizzeria_config import modifier_pizzeria
-        data = await request.json()
-        ok = modifier_pizzeria(pizzeria_id, data)
-        return JSONResponse({"statut": "ok" if ok else "erreur"})
+        from pizzeria_config import get_menu, get_commandes_du_jour_v2, get_pizzeria_by_id
+        pizzeria = get_pizzeria_by_id(pizzeria_id)
+        if not pizzeria:
+            return JSONResponse({"statut": "erreur", "message": "Pizzeria introuvable"}, status_code=404)
+        menu       = get_menu(pizzeria_id)
+        commandes = get_commandes_du_jour_v2(pizzeria_id)
+        actives   = [c for c in commandes if not c.get("annulee")]
+        return JSONResponse({
+            "pizzeria": pizzeria,
+            "menu": menu,
+            "commandes_aujourd_hui": actives,
+            "nb_commandes": len(actives)
+        })
     except Exception as e:
         return JSONResponse({"statut": "erreur", "message": str(e)}, status_code=500)
 
