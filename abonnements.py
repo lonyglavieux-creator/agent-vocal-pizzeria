@@ -41,9 +41,9 @@ def creer_client_nova(nom: str, email: str, tel: str, pizzeria: str):
         conn = await asyncpg.connect(DATABASE_URL)
         try:
             await conn.execute("""
-                INSERT INTO clients_nova (nom, email, telephone, pizzeria, stripe_customer_id, actif)
-                VALUES ($1, $2, $3, $4, $5, false)
-                """, nom, email, tel, pizzeria, customer.id)
+                INSERT INTO clients_nova (nom, email, telephone, pizzeria, stripe_customer_id, statut, lien_paiement)
+                VALUES ($1, $2, $3, $4, $5, 'inactif', $6)
+                """, nom, email, tel, pizzeria, customer.id, session.url)
         finally:
             await conn.close()
 
@@ -62,15 +62,16 @@ def activer_client(customer_id: str, subscription_id: str) -> bool:
     async def _do():
         conn = await asyncpg.connect(DATABASE_URL)
         try:
-            await conn.execute("""
-                UPDATE clients_nova SET actif=true, stripe_subscription_id=$1
+            result = await conn.execute("""
+                UPDATE clients_nova SET statut='actif', stripe_subscription_id=$1, activated_at=NOW(), updated_at=NOW()
                 WHERE stripe_customer_id=$2
                 """, subscription_id, customer_id)
+            return result
         finally:
             await conn.close()
     try:
-        run_async(_do())
-        return True
+        result = run_async(_do())
+        return result is not None and result.endswith(" 1")
     except Exception as e:
         print("Erreur activer_client : " + str(e))
         return False
@@ -80,14 +81,16 @@ def desactiver_client(customer_id: str) -> bool:
     async def _do():
         conn = await asyncpg.connect(DATABASE_URL)
         try:
-            await conn.execute("""
-                UPDATE clients_nova SET actif=false WHERE stripe_customer_id=$1
+            result = await conn.execute("""
+                UPDATE clients_nova SET statut='expire', deactivated_at=NOW(), updated_at=NOW()
+                WHERE stripe_customer_id=$1
                 """, customer_id)
+            return result
         finally:
             await conn.close()
     try:
-        run_async(_do())
-        return True
+        result = run_async(_do())
+        return result is not None and result.endswith(" 1")
     except Exception as e:
         print("Erreur desactiver_client : " + str(e))
         return False
@@ -97,7 +100,7 @@ def get_clients_actifs() -> list:
     async def _do():
         conn = await asyncpg.connect(DATABASE_URL)
         try:
-            rows = await conn.fetch("SELECT * FROM clients_nova WHERE actif=true ORDER BY id ASC")
+            rows = await conn.fetch("SELECT * FROM clients_nova WHERE statut='actif' ORDER BY id ASC")
             return [dict(r) for r in rows]
         finally:
             await conn.close()
