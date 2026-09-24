@@ -10,7 +10,8 @@ from datetime import datetime
 from voice_handler import (
     transcribe_audio, get_nova_response, build_twiml_response,
     extract_command_from_conversation, needs_to_place_order,
-    get_or_create_history, clear_history, conversation_histories
+    get_or_create_history, clear_history, conversation_histories,
+    ajouter_voix, AUDIO_CACHE
 )
 from database import (
     sauvegarder_commande, annuler_commande_db, charger_commandes_du_jour,
@@ -284,6 +285,13 @@ def get_context():
 # ROUTES VOCALES TWILIO
 # ──────────────────────────────────────────────
 
+@app.get("/audio/{nom}")
+def servir_audio(nom: str):
+    audio_id = nom.replace(".mp3", "")
+    item = AUDIO_CACHE.get(audio_id)
+    if not item:
+        return Response(status_code=404)
+    return Response(content=item[0], media_type="audio/mpeg")
 @app.post("/voice/incoming")
 async def voice_incoming(request: Request):
     """Twilio appelle cette route quand quelqu un appelle le numero."""
@@ -338,7 +346,7 @@ async def voice_incoming(request: Request):
         resp.hangup()
         return Response(content=str(resp), media_type="application/xml")
 
-    message_accueil = "Bonjour, Bella Pizza a l ecoute, je vous ecoute. Que puis-je faire pour vous ?"
+    message_accueil = "Bonjour, vous etes en relation avec Nova, l assistante vocale a intelligence artificielle de Bella Pizza. Que puis-je faire pour vous ?"
     gather = Gather(
         input="speech",
         action=API_BASE + "/voice/respond",
@@ -348,7 +356,7 @@ async def voice_incoming(request: Request):
         timeout=6
     )
     resp = VoiceResponse()
-    resp.say(message_accueil, voice="Polly.Lea", language="fr-FR")
+    ajouter_voix(resp, message_accueil)
     resp.append(gather)
     resp.redirect(API_BASE + "/voice/incoming")
     return Response(content=str(resp), media_type="application/xml")
