@@ -11,7 +11,7 @@ from voice_handler import (
     transcribe_audio, get_nova_response, build_twiml_response,
     extract_command_from_conversation, needs_to_place_order,
     get_or_create_history, clear_history, conversation_histories,
-    ajouter_voix, AUDIO_CACHE
+     ajouter_voix, AUDIO_CACHE, sans_accents
 )
 from database import (
     sauvegarder_commande, annuler_commande_db, charger_commandes_du_jour,
