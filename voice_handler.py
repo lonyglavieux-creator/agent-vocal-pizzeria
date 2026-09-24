@@ -1,69 +1,87 @@
 import os
 import io
 import json
+import time
+import uuid
+import base64
+import unicodedata
 import httpx
 from groq import Groq
 from twilio.twiml.voice_response import VoiceResponse, Gather
-from datetime import datetime
-
+ 
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
+ 
 VOXTRAL_API_URL = "https://api.mistral.ai/v1/audio/speech"
 MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
-
+MISTRAL_VOICE_ID = os.environ.get("MISTRAL_VOICE_ID", "")
+ 
 API_BASE = os.environ.get("API_BASE_URL", "https://web-production-967e41.up.railway.app")
-
-SYSTEM_PROMPT = """Tu es Nova, l assistante vocale de Bella Pizza. Tu reponds UNIQUEMENT en francais, ton chaleureux et naturel. Maximum 2 phrases courtes a la fois.
-
-HORAIRES : Ouvert lundi-samedi, 18h15 a 22h00. Dimanche ferme : dis "Bella Pizza est fermee le dimanche. Nous sommes ouverts du lundi au samedi de 18h15 a 22h00."
-
-REGLES FOUR : 1 four, 2 etages, max 2 pizzas par 15 minutes. 15 min minimum entre commandes.
-
-PROCESSUS COMMANDE (dans l ordre) :
-1. Demande le prenom
-2. Demande la ou les pizzas et la quantite
-3. Demande les modifications eventuelles
-4. Demande l heure de retrait (entre 18h15 et 22h00, ce soir uniquement)
-5. Demande le numero de telephone
-6. Annonce le prix total avant confirmation
-7. Confirme : "Parfait [prenom] ! [nb] pizza(s) [nom] pour [heure], total [prix] euros. Je confirme ?"
-8. Si oui : appelle l outil passer_commande
-
-PRIX CARTE :
-Margherita 9.50 | Napolitaine 10.50 | Reine/Regina 11.50 | Thon 11 | Vegetarienne 11
-4 Fromages 12 | Cremosa 12 | Palerme 12 | Primavera 12
-Flammenkuche 12.50 | Chevre Miel 12.50 | Roquefort 12.50 | Kebab 12.50 | Bergere 12.50
-Parmigiano 13 | Biggy Burger 13 | Vittoria 13 | Calabrese 13
-Rucola 13.50 | Rucolini 13.50 | Savoyarde 13.50 | Alpin 13.50 | Magretto 13.50 | Diavolita 13.50 | Pollo Pesto 13.50 | Calzone 13.50
-Carnivore 14 | Corleoni 14 | Marco 14 | Nonna 14 | Calzone Kebab 14
-Saumon 14.50 | Buffalo 14.50
-
-REGLES IMPORTANTES :
-- Jamais confirmer sans annoncer le prix total
-- Jamais accepter avant 18h15 ou apres 22h00
-- Jamais accepter le dimanche
-- Jamais pour un autre jour que ce soir
-- Toujours demander le numero de telephone"""
-
+ 
+SYSTEM_PROMPT = """Tu es Nova, l'assistante vocale de Bella Pizza. Tu parles au téléphone avec un client.
+ 
+FORME DES RÉPONSES (très important, ta réponse est lue à voix haute) :
+- Français correct, avec tous les accents et les apostrophes.
+- Deux phrases courtes maximum.
+- Aucun emoji, aucun astérisque, aucune liste, aucun symbole.
+- Écris les prix en toutes lettres : « douze euros cinquante », jamais « 12.50 » ni « 12,50 € ».
+- Écris les heures en toutes lettres : « dix-neuf heures trente », jamais « 19h30 ».
+ 
+HORAIRES : ouvert du lundi au samedi, de dix-huit heures quinze à vingt-deux heures. Fermé le dimanche.
+ 
+RÈGLES DU FOUR : un seul four, deux pizzas maximum par tranche de quinze minutes.
+ 
+DÉROULEMENT D'UNE COMMANDE (dans l'ordre, une question à la fois) :
+1. Demande le prénom.
+2. Demande la ou les pizzas et la quantité.
+3. Demande s'il y a des modifications.
+4. Demande l'heure de retrait (ce soir uniquement, entre dix-huit heures quinze et vingt-deux heures).
+5. Demande le numéro de téléphone.
+6. Annonce le prix total.
+7. Demande confirmation : « Parfait [prénom], [nombre] pizza [nom] pour [heure], total [prix]. Je confirme ? »
+8. Si le client dit oui, réponds exactement en commençant par : « Commande confirmée. » puis remercie-le et dis au revoir.
+ 
+CARTE ET PRIX (en euros) :
+Margherita 9,50 ; Napolitaine 10,50 ; Reine ou Regina 11,50 ; Thon 11 ; Végétarienne 11 ;
+Quatre fromages 12 ; Cremosa 12 ; Palerme 12 ; Primavera 12 ;
+Flammenkuche 12,50 ; Chèvre miel 12,50 ; Roquefort 12,50 ; Kebab 12,50 ; Bergère 12,50 ;
+Parmigiano 13 ; Biggy Burger 13 ; Vittoria 13 ; Calabrese 13 ;
+Rucola 13,50 ; Rucolini 13,50 ; Savoyarde 13,50 ; Alpin 13,50 ; Magretto 13,50 ; Diavolita 13,50 ; Pollo Pesto 13,50 ; Calzone 13,50 ;
+Carnivore 14 ; Corleoni 14 ; Marco 14 ; Nonna 14 ; Calzone Kebab 14 ;
+Saumon 14,50 ; Buffalo 14,50.
+ 
+RÈGLES STRICTES :
+- Ne jamais confirmer sans avoir annoncé le prix total.
+- Refuser toute commande avant dix-huit heures quinze ou après vingt-deux heures.
+- Refuser toute commande le dimanche ou pour un autre jour que ce soir.
+- Toujours demander le numéro de téléphone."""
+ 
 conversation_histories = {}
-
-
+AUDIO_CACHE = {}  # id -> (bytes mp3, heure de creation)
+ 
+ 
+def sans_accents(texte: str) -> str:
+    """Enleve accents et apostrophes pour comparer des mots-cles."""
+    texte = unicodedata.normalize("NFD", texte.lower())
+    texte = "".join(c for c in texte if unicodedata.category(c) != "Mn")
+    return texte.replace("'", " ").replace("\u2019", " ")
+ 
+ 
 def get_or_create_history(call_sid: str) -> list:
     if call_sid not in conversation_histories:
         conversation_histories[call_sid] = []
     return conversation_histories[call_sid]
-
-
+ 
+ 
 def clear_history(call_sid: str):
     if call_sid in conversation_histories:
         del conversation_histories[call_sid]
-
-
+ 
+ 
 def transcribe_audio(audio_url: str) -> str:
     try:
         response = httpx.get(audio_url, timeout=15)
-        audio_data = response.content
-        audio_file = io.BytesIO(audio_data)
+        audio_file = io.BytesIO(response.content)
         audio_file.name = "audio.wav"
         transcription = groq_client.audio.transcriptions.create(
             file=audio_file,
@@ -75,52 +93,45 @@ def transcribe_audio(audio_url: str) -> str:
     except Exception as e:
         print("Erreur transcription Whisper : " + str(e))
         return ""
-
-
+ 
+ 
 def get_nova_response(call_sid: str, user_text: str, context: dict = None) -> str:
     history = get_or_create_history(call_sid)
-
+ 
+    system = SYSTEM_PROMPT
     if context:
-        context_str = "\n\nCONTEXTE ACTUEL :\n"
+        system += "\n\nCONTEXTE ACTUEL :\n"
         if context.get("jour_semaine"):
-            context_str += "Jour : " + context["jour_semaine"] + "\n"
+            system += "Jour : " + context["jour_semaine"] + "\n"
         if context.get("heure_actuelle"):
-            context_str += "Heure : " + context["heure_actuelle"] + "\n"
+            system += "Heure : " + context["heure_actuelle"] + "\n"
         if context.get("indisponibles"):
-            context_str += "Pizzas indisponibles ce soir : " + ", ".join(context["indisponibles"].keys()) + "\n"
+            system += "Pizzas indisponibles ce soir : " + ", ".join(context["indisponibles"].keys()) + "\n"
         if context.get("fours_actifs") == 0:
-            context_str += "ATTENTION : Le four est en panne, aucune commande possible.\n"
-        system = SYSTEM_PROMPT + context_str
-    else:
-        system = SYSTEM_PROMPT
-
+            system += "ATTENTION : le four est en panne, aucune commande possible.\n"
+ 
     history.append({"role": "user", "content": user_text})
-
+ 
     try:
         response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=GROQ_MODEL,
             messages=[{"role": "system", "content": system}] + history,
-            max_tokens=200,
-            temperature=0.7
+            max_tokens=1024,
+            temperature=0.6,
+            extra_body={"reasoning_effort": "low"}
         )
-        nova_text = response.choices[0].message.content.strip()
+        nova_text = (response.choices[0].message.content or "").strip()
+        if not nova_text:
+            raise ValueError("reponse vide du modele")
         history.append({"role": "assistant", "content": nova_text})
         if len(history) > 20:
             conversation_histories[call_sid] = history[-20:]
         return nova_text
     except Exception as e:
         print("Erreur LLM Groq : " + str(e))
-        return "Desolee, j ai une petite difficulte technique. Pouvez-vous repeter ?"
-
-
-import base64
-import uuid
-import time
-
-MISTRAL_VOICE_ID = os.environ.get("MISTRAL_VOICE_ID", "")
-AUDIO_CACHE = {}  # id -> (bytes mp3, heure de creation)
-
-
+        return "Désolée, j'ai une petite difficulté technique. Pouvez-vous répéter ?"
+ 
+ 
 def synthesize_voice(text: str) -> bytes | None:
     if not MISTRAL_API_KEY or not MISTRAL_VOICE_ID:
         print("Voxtral desactive : cle ou voice_id manquant")
@@ -149,8 +160,8 @@ def synthesize_voice(text: str) -> bytes | None:
     except Exception as e:
         print("Erreur TTS : " + str(e))
         return None
-
-
+ 
+ 
 def stocker_audio(audio: bytes) -> str:
     maintenant = time.time()
     for k in list(AUDIO_CACHE):
@@ -159,16 +170,16 @@ def stocker_audio(audio: bytes) -> str:
     audio_id = uuid.uuid4().hex
     AUDIO_CACHE[audio_id] = (audio, maintenant)
     return audio_id
-
-
+ 
+ 
 def ajouter_voix(response: VoiceResponse, text: str):
     audio = synthesize_voice(text)
     if audio:
         response.play(API_BASE + "/audio/" + stocker_audio(audio) + ".mp3")
     else:
         response.say(text, voice="Polly.Lea", language="fr-FR")
-
-
+ 
+ 
 def build_twiml_response(nova_text: str, gather_action: str, is_end: bool = False) -> str:
     response = VoiceResponse()
     ajouter_voix(response, nova_text)
@@ -184,39 +195,42 @@ def build_twiml_response(nova_text: str, gather_action: str, is_end: bool = Fals
         response.append(gather)
         response.redirect(gather_action)
     return str(response)
-
+ 
+ 
 def extract_command_from_conversation(history: list) -> dict | None:
     if not history:
         return None
     try:
-        extract_prompt = """Analyse cette conversation et extrait les informations de commande en JSON.
-Reponds UNIQUEMENT avec un JSON valide, rien d autre.
-Format : {"prenom": "...", "pizzas": "...", "nb": 1, "heure": "...", "telephone": "...", "extras": ""}
-Si une info manque mets null."""
-
-        messages = [{"role": "system", "content": extract_prompt}]
+        extract_prompt = """Analyse cette conversation et extrais les informations de commande.
+Réponds UNIQUEMENT avec un JSON valide, sans texte autour.
+Format : {"prenom": "...", "pizzas": "...", "nb": 1, "heure": "19h30", "telephone": "...", "extras": ""}
+L'heure doit être au format 19h30. Si une information manque, mets null."""
+ 
         conv_text = "\n".join([m["role"] + ": " + m["content"] for m in history[-10:]])
-        messages.append({"role": "user", "content": "Conversation :\n" + conv_text})
-
         response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=messages,
-            max_tokens=200,
-            temperature=0
+            model=GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": extract_prompt},
+                {"role": "user", "content": "Conversation :\n" + conv_text}
+            ],
+            max_tokens=1024,
+            temperature=0,
+            extra_body={"reasoning_effort": "low"}
         )
-        raw = response.choices[0].message.content.strip()
-        raw = raw.replace("```json", "").replace("```", "").strip()
-        return json.loads(raw)
+        raw = (response.choices[0].message.content or "").strip()
+        debut, fin = raw.find("{"), raw.rfind("}")
+        if debut == -1 or fin == -1:
+            raise ValueError("pas de JSON dans : " + raw[:200])
+        return json.loads(raw[debut:fin + 1])
     except Exception as e:
         print("Erreur extraction commande : " + str(e))
         return None
-
-
+ 
+ 
 def needs_to_place_order(nova_text: str) -> bool:
     keywords = [
         "commande confirmee", "commande enregistree", "c est confirme",
-        "c'est confirme", "bien note", "parfait je confirme",
         "votre commande est passee", "commande validee"
     ]
-    text_lower = nova_text.lower()
-    return any(kw in text_lower for kw in keywords)
+    texte = sans_accents(nova_text)
+    return any(kw in texte for kw in keywords)
