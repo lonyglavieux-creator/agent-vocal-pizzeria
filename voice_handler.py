@@ -2,7 +2,6 @@ import os
 import io
 import json
 import httpx
-import tempfile
 from groq import Groq
 from twilio.twiml.voice_response import VoiceResponse, Gather
 from datetime import datetime
