@@ -114,46 +114,65 @@ def get_nova_response(call_sid: str, user_text: str, context: dict = None) -> st
         return "Desolee, j ai une petite difficulte technique. Pouvez-vous repeter ?"
 
 
+import base64
+import uuid
+import time
+
+MISTRAL_VOICE_ID = os.environ.get("MISTRAL_VOICE_ID", "")
+AUDIO_CACHE = {}  # id -> (bytes mp3, heure de creation)
+
+
 def synthesize_voice(text: str) -> bytes | None:
-    if not MISTRAL_API_KEY:
+    if not MISTRAL_API_KEY or not MISTRAL_VOICE_ID:
+        print("Voxtral desactive : cle ou voice_id manquant")
         return None
     try:
-        response = httpx.post(
+        r = httpx.post(
             VOXTRAL_API_URL,
             headers={
                 "Authorization": "Bearer " + MISTRAL_API_KEY,
                 "Content-Type": "application/json"
             },
             json={
-                "model": "voxtral-tts-1",
+                "model": "voxtral-mini-tts-2603",
                 "input": text,
-                "voice": "nova-fr",
+                "voice_id": MISTRAL_VOICE_ID,
                 "response_format": "mp3"
             },
-            timeout=15
+            timeout=10
         )
-        if response.status_code == 200:
-            return response.content
-        else:
-            print("Erreur Voxtral : " + str(response.status_code))
+        if r.status_code != 200:
+            print("Erreur Voxtral : " + str(r.status_code) + " " + r.text[:300])
             return None
+        if "application/json" in r.headers.get("content-type", ""):
+            return base64.b64decode(r.json()["audio_data"])
+        return r.content
     except Exception as e:
         print("Erreur TTS : " + str(e))
         return None
 
 
+def stocker_audio(audio: bytes) -> str:
+    maintenant = time.time()
+    for k in list(AUDIO_CACHE):
+        if maintenant - AUDIO_CACHE[k][1] > 300:
+            del AUDIO_CACHE[k]
+    audio_id = uuid.uuid4().hex
+    AUDIO_CACHE[audio_id] = (audio, maintenant)
+    return audio_id
+
+
+def ajouter_voix(response: VoiceResponse, text: str):
+    audio = synthesize_voice(text)
+    if audio:
+        response.play(API_BASE + "/audio/" + stocker_audio(audio) + ".mp3")
+    else:
+        response.say(text, voice="Polly.Lea", language="fr-FR")
+
+
 def build_twiml_response(nova_text: str, gather_action: str, is_end: bool = False) -> str:
     response = VoiceResponse()
-    audio_bytes = synthesize_voice(nova_text)
-
-    if audio_bytes:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
-            f.write(audio_bytes)
-            tmp_path = f.name
-        response.play(API_BASE + "/audio/" + os.path.basename(tmp_path))
-    else:
-        response.say(nova_text, voice="Polly.Lea", language="fr-FR")
-
+    ajouter_voix(response, nova_text)
     if not is_end:
         gather = Gather(
             input="speech",
@@ -165,9 +184,7 @@ def build_twiml_response(nova_text: str, gather_action: str, is_end: bool = Fals
         )
         response.append(gather)
         response.redirect(gather_action)
-
     return str(response)
-
 
 def extract_command_from_conversation(history: list) -> dict | None:
     if not history:
